@@ -18,7 +18,6 @@ import AnalyticsPage from "./pages/AnalyticsPage";
 import NotificationsPage from "./pages/NotificationsPage";
 import SettingsPage from "./pages/SettingsPage";
 import VerificationPage from "./pages/VerificationPage";
-import PaymentSettingsPage from "./pages/PaymentSettingsPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -43,7 +42,6 @@ const App = () => (
               <Route path="notifications" element={<NotificationsPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="verification" element={<VerificationPage />} />
-              <Route path="payment-settings" element={<PaymentSettingsPage />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>
