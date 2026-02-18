@@ -16,6 +16,7 @@ import InvoicesPage from "./pages/InvoicesPage";
 import PricingPage from "./pages/PricingPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import NotificationsPage from "./pages/NotificationsPage";
+import Walletpage from "./pages/Walletpage";
 import SettingsPage from "./pages/SettingsPage";
 import VerificationPage from "./pages/VerificationPage";
 import NotFound from "./pages/NotFound";
@@ -40,6 +41,7 @@ const App = () => (
               <Route path="invoices" element={<InvoicesPage />} />
               <Route path="pricing" element={<PricingPage />} />
               <Route path="notifications" element={<NotificationsPage />} />
+              <Route path ="wallet"element={<Walletpage/>} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="verification" element={<VerificationPage />} />
             </Route>
