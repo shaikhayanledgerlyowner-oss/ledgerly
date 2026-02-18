@@ -6,25 +6,20 @@ export default function AuthCallback() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const handleAuth = async () => {
-      const { data, error } = await supabase.auth.exchangeCodeForSession(
-        window.location.href
-      );
-
-      if (error) {
-        console.error("Auth error:", error);
-        navigate("/auth", { replace: true });
-        return;
-      }
-
-      if (data?.session) {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
         navigate("/dashboard", { replace: true });
       } else {
-        navigate("/auth", { replace: true });
+        // Hash fragment handle karo
+        supabase.auth.onAuthStateChange((event, session) => {
+          if (event === "SIGNED_IN" && session) {
+            navigate("/dashboard", { replace: true });
+          } else if (event === "SIGNED_OUT") {
+            navigate("/auth", { replace: true });
+          }
+        });
       }
-    };
-
-    handleAuth();
+    });
   }, [navigate]);
 
   return (
