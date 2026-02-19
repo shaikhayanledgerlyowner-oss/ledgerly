@@ -16,7 +16,7 @@ import InvoicesPage from "./pages/InvoicesPage";
 import PricingPage from "./pages/PricingPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import NotificationsPage from "./pages/NotificationsPage";
-import Walletpage from "./pages/Walletpage";
+import WalletPage from "./pages/Walletpage";
 import SettingsPage from "./pages/SettingsPage";
 import VerificationPage from "./pages/VerificationPage";
 import NotFound from "./pages/NotFound";
@@ -34,17 +34,26 @@ const App = () => (
             <Route path="/" element={<Index />} />
             <Route path="/auth" element={<AuthPage />} />
             <Route path="/auth/callback" element={<AuthCallback />} />
-            <Route path="/dashboard" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
+
+            <Route
+              path="/dashboard"
+              element={
+                <ProtectedRoute>
+                  <DashboardLayout />
+                </ProtectedRoute>
+              }
+            >
               <Route index element={<DashboardHome />} />
               <Route path="tables" element={<TablesPage />} />
               <Route path="analytics" element={<AnalyticsPage />} />
               <Route path="invoices" element={<InvoicesPage />} />
               <Route path="pricing" element={<PricingPage />} />
               <Route path="notifications" element={<NotificationsPage />} />
-              <Route path ="wallet"element={<Walletpage/>} />
+              <Route path="wallet" element={<WalletPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="verification" element={<VerificationPage />} />
             </Route>
+
             <Route path="*" element={<NotFound />} />
           </Routes>
         </AuthProvider>
