@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   LayoutDashboard, Table2, FileText, CreditCard, Settings, Bell, LogOut,
-  BookOpen, Shield, BarChart3, Menu
+  BookOpen, Shield, BarChart3, Menu, Wallet
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
@@ -25,7 +25,7 @@ const navItems = [
 const ownerItems = [
   { to: "/dashboard/notifications", icon: Bell, label: "Notifications" },
   { to: "/dashboard/verification", icon: Shield, label: "Verification Queue" },
-  { to: "/dashboard/payment-settings", icon: CreditCard, label: "Payment Settings" },
+  { to: "/dashboard/wallet", icon: Wallet, label: "Wallet" },
 ];
 
 const pageTitles: Record<string, string> = {
@@ -37,7 +37,7 @@ const pageTitles: Record<string, string> = {
   "/dashboard/notifications": "Notifications",
   "/dashboard/settings": "Settings",
   "/dashboard/verification": "Verification Queue",
-  "/dashboard/payment-settings": "Payment Settings",
+  "/dashboard/wallet": "Wallet",
 };
 
 export default function DashboardLayout() {
