@@ -1,4 +1,5 @@
 import { useAuth } from "@/contexts/AuthContext";
+import { formatCurrency } from "@/lib/currency";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -92,30 +93,24 @@ type TableAnalytics = {
 };
 
 export default function DashboardHome() {
-  const { profile, isOwner, isPremium } = useAuth();
+  // ✅ userCurrency added
+  const { profile, isOwner, isPremium, userCurrency } = useAuth();
   const navigate = useNavigate();
 
   const [stats, setStats] = useState({ tables: 0, invoices: 0, pending: 0 });
 
-  // ✅ split totals (docs vs tables)
   const [docRevenue, setDocRevenue] = useState(0);
   const [docExpenses, setDocExpenses] = useState(0);
   const [tableRevenue, setTableRevenue] = useState(0);
   const [tableExpenses, setTableExpenses] = useState(0);
 
-  // ✅ split chart data (docs vs tables)
   const [docChartData, setDocChartData] = useState<ChartPoint[]>([]);
   const [tableChartData, setTableChartData] = useState<ChartPoint[]>([]);
-
-  // ✅ table-wise chart data map
   const [tableChartById, setTableChartById] = useState<Record<string, ChartPoint[]>>({});
 
   const [recentTables, setRecentTables] = useState<TableSummary[]>([]);
-
-  // ✅ tab state
   const [activeTab, setActiveTab] = useState<TabKey>("tables");
 
-  // ✅ documents breakdown state
   const [docSummary, setDocSummary] = useState<{
     invoices: number;
     quotations: number;
@@ -126,17 +121,13 @@ export default function DashboardHome() {
     { label: string; count: number; total: number }[]
   >([]);
 
-  // ✅ per-table analytics list
   const [tableAnalytics, setTableAnalytics] = useState<TableAnalytics[]>([]);
-
-  // ✅ analytics selector (All tables vs one table)
   const [selectedAnalyticsTableId, setSelectedAnalyticsTableId] = useState<string>("all");
 
   useEffect(() => {
     if (!profile) return;
 
     const load = async () => {
-      // --------- 1) basic counts ----------
       const [t, i, p] = await Promise.all([
         supabase
           .from("user_tables")
@@ -160,7 +151,7 @@ export default function DashboardHome() {
         pending: (p as any).count ?? 0,
       });
 
-      // --------- 2) DOCUMENTS ANALYTICS (DAILY) ----------
+      // --------- DOCUMENTS ANALYTICS ----------
       let docsRev = 0;
       let docsExp = 0;
       const docsDayMap: Record<string, { revenue: number; expense: number }> = {};
@@ -210,7 +201,6 @@ export default function DashboardHome() {
         }
       });
 
-      // ✅ OPTIONAL: show today even if 0
       const todayDocs = dayKey(new Date().toISOString());
       ensureDocsDay(todayDocs);
 
@@ -225,7 +215,7 @@ export default function DashboardHome() {
       setDocExpenses(docsExp);
       setDocChartData(mapToChartPoints(docsDayMap));
 
-      // --------- 3) TABLE ANALYTICS (DAILY) (ALL + PER TABLE) ----------
+      // --------- TABLE ANALYTICS ----------
       let tblRev = 0;
       let tblExp = 0;
 
@@ -239,7 +229,6 @@ export default function DashboardHome() {
       const expenseNameRegex =
         /(expense|cost|spent|purchase|fee|charges|rent|salary|tax|gst|vat)/i;
 
-      // tables list
       const { data: allTables } = await supabase
         .from("user_tables")
         .select("id,name")
@@ -247,7 +236,6 @@ export default function DashboardHome() {
 
       const tableIds = (allTables ?? []).map((x: any) => x.id);
 
-      // prepare per-table maps
       const perTableMoney: Record<string, { revenue: number; expense: number }> = {};
       const perTableDayMap: Record<string, Record<string, { revenue: number; expense: number }>> =
         {};
@@ -310,35 +298,28 @@ export default function DashboardHome() {
             if (col.bucket === "revenue") {
               tblRev += num;
               allDayMap[dk].revenue += num;
-
               perTableMoney[r.table_id] = perTableMoney[r.table_id] ?? { revenue: 0, expense: 0 };
               perTableMoney[r.table_id].revenue += num;
-
               perTableDayMap[r.table_id][dk].revenue += num;
             } else {
               tblExp += num;
               allDayMap[dk].expense += num;
-
               perTableMoney[r.table_id] = perTableMoney[r.table_id] ?? { revenue: 0, expense: 0 };
               perTableMoney[r.table_id].expense += num;
-
               perTableDayMap[r.table_id][dk].expense += num;
             }
           }
         });
       }
 
-      // ✅ OPTIONAL: show today even if 0
       const todayTbl = dayKey(new Date().toISOString());
       ensureAllDay(todayTbl);
-      // also ensure each table has today key (optional but nice)
       (allTables ?? []).forEach((t: any) => ensureTblDay(t.id, todayTbl));
 
       setTableRevenue(tblRev);
       setTableExpenses(tblExp);
       setTableChartData(mapToChartPoints(allDayMap));
 
-      // build chartById
       const chartById: Record<string, ChartPoint[]> = {};
       (allTables ?? []).forEach((t: any) => {
         const tid = t.id;
@@ -347,7 +328,6 @@ export default function DashboardHome() {
       });
       setTableChartById(chartById);
 
-      // table analytics list (needs rowCount too)
       if ((allTables ?? []).length > 0) {
         const counts = await Promise.all(
           (allTables ?? []).map(async (tb: any) => {
@@ -373,7 +353,6 @@ export default function DashboardHome() {
         setTableAnalytics([]);
       }
 
-      // --------- 4) recent tables ----------
       const { data: tablesData } = await supabase
         .from("user_tables")
         .select("id, name")
@@ -396,7 +375,6 @@ export default function DashboardHome() {
         setRecentTables([]);
       }
 
-      // ✅ If selected table got deleted, fallback
       if (selectedAnalyticsTableId !== "all") {
         const exists = (allTables ?? []).some((t: any) => t.id === selectedAnalyticsTableId);
         if (!exists) setSelectedAnalyticsTableId("all");
@@ -409,12 +387,10 @@ export default function DashboardHome() {
 
   const displayName = profile?.display_name || profile?.email?.split("@")[0] || "User";
 
-  // ✅ active values by tab
   const activeRevenue = activeTab === "tables" ? tableRevenue : docRevenue;
   const activeExpenses = activeTab === "tables" ? tableExpenses : docExpenses;
   const activeNetProfit = activeRevenue - activeExpenses;
 
-  // ✅ Chart data by tab + (table selector)
   const activeChartData =
     activeTab === "documents"
       ? docChartData
@@ -476,7 +452,7 @@ export default function DashboardHome() {
         </p>
       </div>
 
-      {/* ✅ MAIN TOGGLE affects whole dashboard */}
+      {/* MAIN TOGGLE */}
       <Card className="glass-card">
         <CardContent className="py-3 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2">
@@ -507,23 +483,23 @@ export default function DashboardHome() {
         </CardContent>
       </Card>
 
-      {/* Stat Cards (NO MIX) */}
+      {/* ✅ Stat Cards — formatCurrency se */}
       <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
         <StatCard
           title={activeTab === "tables" ? "Tables Revenue" : "Documents Revenue"}
-          value={`₹${activeRevenue.toLocaleString("en-IN")}`}
+          value={formatCurrency(activeRevenue, userCurrency)}
           icon={TrendingUp}
           color="text-success"
         />
         <StatCard
           title={activeTab === "tables" ? "Tables Expenses" : "Documents Expenses"}
-          value={`₹${activeExpenses.toLocaleString("en-IN")}`}
+          value={formatCurrency(activeExpenses, userCurrency)}
           icon={TrendingDown}
           color="text-destructive"
         />
         <StatCard
           title={activeTab === "tables" ? "Tables Net" : "Documents Net"}
-          value={`₹${activeNetProfit.toLocaleString("en-IN")}`}
+          value={formatCurrency(activeNetProfit, userCurrency)}
           icon={IndianRupee}
           color="text-primary"
         />
@@ -545,7 +521,6 @@ export default function DashboardHome() {
                 <p className="text-xs text-muted-foreground">{chartSubtitle}</p>
               </div>
 
-              {/* ✅ Per-table selector (only for tables tab) */}
               {activeTab === "tables" && (
                 <div className="min-w-[220px]">
                   <Select value={selectedAnalyticsTableId} onValueChange={setSelectedAnalyticsTableId}>
@@ -671,11 +646,12 @@ export default function DashboardHome() {
                           <span className="text-xs text-muted-foreground">({t.rowCount} rows)</span>
                         </div>
 
+                        {/* ✅ formatCurrency se */}
                         <div className="flex items-center gap-4 text-xs">
-                          <span className="text-success font-medium">+₹{t.revenue.toLocaleString("en-IN")}</span>
-                          <span className="text-destructive font-medium">-₹{t.expense.toLocaleString("en-IN")}</span>
+                          <span className="text-success font-medium">+{formatCurrency(t.revenue, userCurrency)}</span>
+                          <span className="text-destructive font-medium">-{formatCurrency(t.expense, userCurrency)}</span>
                           <span className={cn("font-semibold", t.net >= 0 ? "text-primary" : "text-destructive")}>
-                            Net: ₹{t.net.toLocaleString("en-IN")}
+                            Net: {formatCurrency(t.net, userCurrency)}
                           </span>
                         </div>
                       </div>
@@ -738,11 +714,12 @@ export default function DashboardHome() {
                       </tr>
                     </thead>
                     <tbody>
+                      {/* ✅ formatCurrency se */}
                       {docStatusBreakdown.map((s) => (
                         <tr key={s.label} className="border-b border-border/50">
                           <td className="px-3 py-2 capitalize">{s.label}</td>
                           <td className="px-3 py-2 text-right">{s.count}</td>
-                          <td className="px-3 py-2 text-right font-medium">₹{s.total.toLocaleString("en-IN")}</td>
+                          <td className="px-3 py-2 text-right font-medium">{formatCurrency(s.total, userCurrency)}</td>
                         </tr>
                       ))}
                     </tbody>
