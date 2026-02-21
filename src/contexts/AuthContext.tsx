@@ -22,8 +22,10 @@ interface AuthContextType {
   loading: boolean;
   isOwner: boolean;
   isPremium: boolean;
+  userCurrency: string; // ✅ NEW
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
+  refreshCurrency: () => Promise<void>; // ✅ NEW
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -43,14 +45,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [userCurrency, setUserCurrency] = useState("INR"); // ✅ NEW
 
-  // ✅ RLS-friendly: user can only touch row where id = auth.uid()
   const upsertProfileForUser = async (u: User) => {
     const email = u.email ?? "";
     const role: UserRole = email === OWNER_EMAIL ? "OWNER" : "CUSTOMER";
 
     const payload = {
-      id: u.id, // MUST match auth.uid() for RLS
+      id: u.id,
       email,
       role,
       is_premium: email === OWNER_EMAIL,
@@ -72,7 +74,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const loadProfile = async (u: User) => {
-    // First try fetch
     const { data, error } = await supabase
       .from("profiles")
       .select("*")
@@ -81,18 +82,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (error) {
       console.log("[Auth] loadProfile select error:", error);
-      // try creating row anyway (Google login pe often missing)
       const created = await upsertProfileForUser(u);
       return created;
     }
 
     if (!data) {
-      // profile missing -> create
       const created = await upsertProfileForUser(u);
       return created;
     }
 
     return data as any;
+  };
+
+  // ✅ Load currency from user_branding
+  const loadCurrency = async (userId: string) => {
+    const { data } = await supabase
+      .from("user_branding")
+      .select("currency_code")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    const code = (data as any)?.currency_code;
+    if (code && typeof code === "string" && code.trim()) {
+      setUserCurrency(code.trim().toUpperCase());
+    } else {
+      setUserCurrency("INR");
+    }
   };
 
   const setProfileFromRow = (row: any) => {
@@ -121,20 +136,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // Ensure profile exists + load
     const row = await loadProfile(u);
     setProfileFromRow(row);
+
+    // ✅ Load currency after profile
+    await loadCurrency(u.id);
 
     setLoading(false);
   };
 
   useEffect(() => {
-    // First load existing session
     supabase.auth.getSession().then(({ data: { session } }) => {
       hydrate(session);
     });
 
-    // Listen future changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
       hydrate(s);
     });
@@ -148,12 +163,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setSession(null);
     setProfile(null);
+    setUserCurrency("INR");
   };
 
   const refreshProfile = async () => {
     if (!user) return;
     const row = await loadProfile(user);
     setProfileFromRow(row);
+  };
+
+  // ✅ Call this after saving branding in SettingsPage
+  const refreshCurrency = async () => {
+    if (!user) return;
+    await loadCurrency(user.id);
   };
 
   const isOwner = useMemo(() => {
@@ -173,8 +195,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loading,
         isOwner,
         isPremium,
+        userCurrency,
         signOut,
         refreshProfile,
+        refreshCurrency,
       }}
     >
       {children}
