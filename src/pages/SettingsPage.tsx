@@ -55,7 +55,8 @@ function to12HourLabel(hhmm: string) {
 }
 
 export default function SettingsPage() {
-  const { profile, isPremium, refreshProfile } = useAuth();
+  // ✅ refreshCurrency added
+  const { profile, isPremium, refreshProfile, refreshCurrency } = useAuth();
 
   const [displayName, setDisplayName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
@@ -272,7 +273,6 @@ export default function SettingsPage() {
   }, [profile]);
 
   // ---------- Actions ----------
-  // ✅ IMPORTANT: Avatar upload now ONLY updates. No insert/upsert => RLS error gone.
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !profile) return;
@@ -286,7 +286,6 @@ export default function SettingsPage() {
       return;
     }
 
-    // Make sure row exists, otherwise tell user to run SQL trigger (below)
     const { data: existing, error: exErr } = await supabase
       .from("profiles")
       .select("id")
@@ -391,6 +390,7 @@ export default function SettingsPage() {
     }
   };
 
+  // ✅ refreshCurrency call added after successful save
   const saveBranding = async () => {
     if (!profile) return;
 
@@ -412,8 +412,13 @@ export default function SettingsPage() {
       .from("user_branding")
       .upsert(payload as any, { onConflict: "user_id" });
 
-    if (error) toast.error(error.message);
-    else toast.success("Branding saved!");
+    if (error) {
+      toast.error(error.message);
+    } else {
+      // ✅ Currency globally update ho jayegi
+      await refreshCurrency();
+      toast.success("Branding saved!");
+    }
   };
 
   const saveReminder = async () => {
