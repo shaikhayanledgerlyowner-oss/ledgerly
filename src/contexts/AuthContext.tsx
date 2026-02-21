@@ -211,3 +211,47 @@ export function useAuth() {
   if (!ctx) throw new Error("useAuth must be used within AuthProvider");
   return ctx;
 }
+    if (!user) return;
+    const row = await loadProfile(user);
+    setProfileFromRow(row);
+  };
+
+  // ✅ Call this after saving branding in SettingsPage
+  const refreshCurrency = async () => {
+    if (!user) return;
+    await loadCurrency(user.id);
+  };
+
+  const isOwner = useMemo(() => {
+    return profile?.role === "OWNER" || user?.email === OWNER_EMAIL;
+  }, [profile?.role, user?.email]);
+
+  const isPremium = useMemo(() => {
+    return isOwner || (profile?.is_premium ?? false);
+  }, [isOwner, profile?.is_premium]);
+
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        session,
+        profile,
+        loading,
+        isOwner,
+        isPremium,
+        userCurrency,
+        signOut,
+        refreshProfile,
+        refreshCurrency,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
+  return ctx;
+}
