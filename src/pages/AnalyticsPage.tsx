@@ -21,6 +21,11 @@ function formatINR(n: number) {
   return `₹${Number(n || 0).toLocaleString("en-IN")}`;
 }
 
+// ✅ PDF-safe version: Rs. instead of ₹ (jsPDF default font doesn't support ₹)
+function formatINRpdf(n: number) {
+  return `Rs. ${Number(n || 0).toLocaleString("en-IN")}`;
+}
+
 function toNumberSafe(v: any): number {
   if (!v) return 0;
   const cleaned = String(v).replace(/[₹,\s]/g, "");
@@ -140,7 +145,6 @@ export default function AnalyticsPage() {
       const html2canvas = (await import("html2canvas")).default;
       const jsPDF = (await import("jspdf")).default;
 
-      // Capture chart section
       const chartElement = chartRef.current;
       if (!chartElement) return;
 
@@ -162,7 +166,7 @@ export default function AnalyticsPage() {
       pdf.setTextColor(255, 255, 255);
       pdf.setFontSize(14);
       pdf.setFont("helvetica", "bold");
-      pdf.text("Ledgerly — Analytics Report", 14, 12);
+      pdf.text("Ledgerly - Analytics Report", 14, 12);
       pdf.setFontSize(9);
       pdf.setFont("helvetica", "normal");
       pdf.text(`Generated: ${new Date().toLocaleDateString("en-IN")}`, pageWidth - 14, 12, { align: "right" });
@@ -188,9 +192,9 @@ export default function AnalyticsPage() {
 
       // ── Summary table ──
       const summaryRows = [
-        ["Revenue", formatINR(moneySummary.revenue), "#16a34a"],
-        ["Expense", formatINR(moneySummary.expense), "#dc2626"],
-        ["Net Profit", formatINR(moneySummary.profit), moneySummary.profit >= 0 ? "#16a34a" : "#dc2626"],
+        ["Revenue", formatINRpdf(moneySummary.revenue), "#16a34a"],
+        ["Expense", formatINRpdf(moneySummary.expense), "#dc2626"],
+        ["Net Profit", formatINRpdf(moneySummary.profit), moneySummary.profit >= 0 ? "#16a34a" : "#dc2626"],
       ];
 
       summaryRows.forEach(([label, value, color]) => {
@@ -214,7 +218,6 @@ export default function AnalyticsPage() {
 
       // ── Per-column detail ──
       if (barData.length > 0) {
-        // New page if needed
         if (yPos > pageHeight - 60) {
           pdf.addPage();
           yPos = 20;
@@ -255,7 +258,7 @@ export default function AnalyticsPage() {
           pdf.text(item.name, 20, yPos + 1);
           pdf.setFont("helvetica", "bold");
           pdf.setTextColor(37, 99, 235);
-          pdf.text(formatINR(item.total), pageWidth - 20, yPos + 1, { align: "right" });
+          pdf.text(formatINRpdf(item.total), pageWidth - 20, yPos + 1, { align: "right" });
           yPos += 12;
         });
       }
@@ -264,7 +267,7 @@ export default function AnalyticsPage() {
       pdf.setFontSize(8);
       pdf.setTextColor(150, 150, 150);
       pdf.setFont("helvetica", "normal");
-      pdf.text("Ledgerly — Smart Business Management", pageWidth / 2, pageHeight - 8, { align: "center" });
+      pdf.text("Ledgerly - Smart Business Management", pageWidth / 2, pageHeight - 8, { align: "center" });
 
       pdf.save("ledgerly-analytics.pdf");
     } catch (err) {
@@ -288,7 +291,6 @@ export default function AnalyticsPage() {
         </Button>
       </div>
 
-      {/* ✅ Wrap everything to capture in PDF */}
       <div ref={chartRef}>
 
         {/* ✅ GRAND TOTAL = REVENUE ONLY */}
@@ -374,7 +376,7 @@ export default function AnalyticsPage() {
           </CardContent>
         </Card>
 
-      </div>{/* end chartRef */}
+      </div>
 
     </div>
   );
