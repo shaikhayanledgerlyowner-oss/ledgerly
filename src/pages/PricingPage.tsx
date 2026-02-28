@@ -1,16 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Check, Star, AlertTriangle } from "lucide-react";
+import { Check, Star } from "lucide-react";
 import { toast } from "sonner";
 
 declare global {
@@ -45,10 +38,7 @@ function loadRazorpayScript(): Promise<boolean> {
   return new Promise((resolve) => {
     if (window.Razorpay) return resolve(true);
 
-    const existing = document.querySelector(
-      'script[src="https://checkout.razorpay.com/v1/checkout.js"]'
-    ) as HTMLScriptElement | null;
-
+    const existing = document.querySelector('script[src="https://checkout.razorpay.com/v1/checkout.js"]');
     if (existing) {
       existing.addEventListener("load", () => resolve(true));
       existing.addEventListener("error", () => resolve(false));
@@ -66,25 +56,10 @@ function loadRazorpayScript(): Promise<boolean> {
 
 export default function PricingPage() {
   const { profile, isPremium } = useAuth();
-
-  const [pendingRequest, setPendingRequest] = useState(false);
   const [loadingPlan, setLoadingPlan] = useState<Plan["id"] | null>(null);
 
   const keyId = import.meta.env.VITE_RAZORPAY_KEY_ID as string | undefined;
-
   const isLoggedIn = useMemo(() => !!profile?.id, [profile?.id]);
-
-  useEffect(() => {
-    if (!profile?.id) return;
-
-    supabase
-      .from("purchase_requests")
-      .select("id,status")
-      .eq("user_id", profile.id)
-      .eq("status", "pending")
-      .limit(1)
-      .then(({ data }) => setPendingRequest((data ?? []).length > 0));
-  }, [profile?.id]);
 
   const openCheckout = async (plan: Plan) => {
     if (!isLoggedIn) {
@@ -99,10 +74,6 @@ export default function PricingPage() {
       toast.info("Premium already active");
       return;
     }
-    if (pendingRequest) {
-      toast.info("Your verification is pending");
-      return;
-    }
 
     setLoadingPlan(plan.id);
 
@@ -113,40 +84,32 @@ export default function PricingPage() {
         return;
       }
 
-      const amountPaise = Math.round(plan.price * 100);
+      const amountPaise = plan.id === "monthly" ? 19900 : 150000;
 
-      // 1) Create order via Vercel API
-      let orderId: string | null = null;
-      try {
-        const resp = await fetch("/api/create-order", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            amount: amountPaise,
-            currency: "INR",
-            notes: {
-              user_id: profile!.id,
-              plan: plan.id,
-              email: profile!.email || "",
-            },
-          }),
-        });
+      // Create order (server)
+      const resp = await fetch("/api/create-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount: amountPaise,
+          currency: "INR",
+          notes: {
+            user_id: profile!.id,
+            plan: plan.id,
+            email: profile!.email || "",
+          },
+        }),
+      });
 
-        const data = await resp.json().catch(() => ({}));
-        orderId = data?.orderId || data?.id || data?.order_id || null;
+      const data = await resp.json();
+      const orderId = data?.orderId || data?.id || null;
 
-        if (!resp.ok || !orderId) {
-          console.error("create-order failed:", data);
-          toast.error("Order create failed (api/create-order). Vercel logs check karo.");
-          return;
-        }
-      } catch (e) {
-        console.error(e);
-        toast.error("Order create error (api/create-order)");
+      if (!resp.ok || !orderId) {
+        console.error("create-order failed:", data);
+        toast.error("Order create failed. Vercel logs check karo.");
         return;
       }
 
-      // 2) Open Razorpay Checkout
       const options = {
         key: keyId,
         order_id: orderId,
@@ -154,40 +117,18 @@ export default function PricingPage() {
         currency: "INR",
         name: "Ledgerly",
         description: `Ledgerly ${plan.name} Plan`,
-        prefill: {
-          email: profile!.email || "",
-        },
+        prefill: { email: profile!.email || "" },
         notes: {
-          user_id: profile!.id,
+          user_id: profile!.id, // webhook isse user ko identify karega
           plan: plan.id,
         },
-        handler: async function (response: any) {
-          try {
-            const { error } = await supabase.from("purchase_requests").insert({
-              user_id: profile!.id,
-              plan: plan.id,
-              amount: plan.price,
-              status: "pending",
-              txn_id: response?.razorpay_payment_id || null,
-            } as any);
-
-            if (error) {
-              toast.error(error.message);
-              return;
-            }
-
-            toast.success("Payment done ✅ Request sent for verification.");
-            setPendingRequest(true);
-          } catch (err) {
-            console.error(err);
-            toast.error("Payment saved nahi hua");
-          }
+        handler: function () {
+          toast.success("Payment successful ✅ Premium webhook se activate hoga...");
+          // Webhook ko 2-5 sec lag sakte hai
+          setTimeout(() => window.location.reload(), 2500);
         },
         modal: {
           ondismiss: function () {},
-        },
-        theme: {
-          color: "#111827",
         },
       };
 
@@ -206,34 +147,21 @@ export default function PricingPage() {
     <div className="animate-fade-in space-y-8">
       <div className="text-center">
         <h1 className="text-3xl font-display font-bold">Upgrade to Premium</h1>
-        <p className="mt-2 text-muted-foreground">
-          Unlock all features with a premium plan
-        </p>
+        <p className="mt-2 text-muted-foreground">Unlock all features with a premium plan</p>
 
         {isPremium && (
           <Badge className="mt-3 bg-success text-success-foreground">
             <Star className="mr-1 h-3 w-3" /> Premium Active
           </Badge>
         )}
-
-        {pendingRequest && !isPremium && (
-          <Badge className="mt-3" variant="secondary">
-            <AlertTriangle className="mr-1 h-3 w-3" /> Verification Pending
-          </Badge>
-        )}
       </div>
 
       <div className="mx-auto grid max-w-3xl gap-6 md:grid-cols-2">
         {plans.map((plan) => (
-          <Card
-            key={plan.id}
-            className={`glass-card relative ${plan.popular ? "ring-2 ring-accent" : ""}`}
-          >
+          <Card key={plan.id} className={`glass-card relative ${plan.popular ? "ring-2 ring-accent" : ""}`}>
             {plan.popular && (
               <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                <Badge className="gradient-accent text-accent-foreground">
-                  Most Popular
-                </Badge>
+                <Badge className="gradient-accent text-accent-foreground">Most Popular</Badge>
               </div>
             )}
 
@@ -261,12 +189,10 @@ export default function PricingPage() {
                 className="w-full"
                 variant={plan.popular ? "default" : "outline"}
                 onClick={() => openCheckout(plan)}
-                disabled={isPremium || pendingRequest || loadingPlan !== null}
+                disabled={isPremium || loadingPlan !== null}
               >
                 {isPremium
                   ? "Active"
-                  : pendingRequest
-                  ? "Pending"
                   : loadingPlan === plan.id
                   ? "Opening..."
                   : plan.id === "monthly"
@@ -279,7 +205,7 @@ export default function PricingPage() {
       </div>
 
       <p className="text-center text-xs text-muted-foreground">
-        Payment ke baad verification pending rahega. Webhook se wallet_transactions me entry aayegi (captured pe).
+        Payment ke baad Premium auto-activate hoga via Razorpay webhook.
       </p>
     </div>
   );
