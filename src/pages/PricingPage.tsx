@@ -1,181 +1,191 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/integrations/supabase/client";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Check, Star } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Crown, Check, Loader2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 
 declare global {
   interface Window {
-    Razorpay?: any;
+    Razorpay: any;
   }
 }
 
-const plans = [
+const PLANS = [
   {
     id: "monthly",
-    name: "Monthly",
+    label: "Monthly",
     price: 199,
-    currency: "₹",
-    period: "/month",
-    features: ["Unlimited tables", "Professional PDFs", "No watermark", "Priority support"],
+    days: 30,
+    features: ["Unlimited invoices", "PDF exports", "Email reminders", "All currencies"],
   },
   {
     id: "yearly",
-    name: "Yearly",
+    label: "Yearly",
     price: 1500,
-    currency: "₹",
-    period: "/year",
-    features: ["Everything in Monthly", "Save ₹888/year", "Early access to features", "Priority support"],
-    popular: true,
+    days: 365,
+    badge: "Best Value",
+    features: ["Everything in Monthly", "Priority support", "2 months free"],
   },
-] as const;
-
-type Plan = (typeof plans)[number];
-
-function loadRazorpayScript(): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (window.Razorpay) return resolve(true);
-
-    const existing = document.querySelector('script[src="https://checkout.razorpay.com/v1/checkout.js"]');
-    if (existing) {
-      existing.addEventListener("load", () => resolve(true));
-      existing.addEventListener("error", () => resolve(false));
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = "https://checkout.razorpay.com/v1/checkout.js";
-    script.async = true;
-    script.onload = () => resolve(true);
-    script.onerror = () => resolve(false);
-    document.body.appendChild(script);
-  });
-}
+];
 
 export default function PricingPage() {
-  const { profile, isPremium } = useAuth();
-  const [loadingPlan, setLoadingPlan] = useState<Plan["id"] | null>(null);
+  const { user, profile, isPremium, isTrialActive, trialDaysLeft, refreshProfile } = useAuth();
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  const [txnId, setTxnId] = useState("");
+  const [selectedPlan, setSelectedPlan] = useState<string | null>(null);
+  const [showManual, setShowManual] = useState(false);
 
-  const keyId = import.meta.env.VITE_RAZORPAY_KEY_ID as string | undefined;
-  const isLoggedIn = useMemo(() => !!profile?.id, [profile?.id]);
-
-  const openCheckout = async (plan: Plan) => {
-    if (!isLoggedIn) {
-      toast.error("Please login first");
-      return;
-    }
-    if (!keyId) {
-      toast.error("VITE_RAZORPAY_KEY_ID missing in Vercel env");
-      return;
-    }
-    if (isPremium) {
-      toast.info("Premium already active");
-      return;
-    }
-
+  // ✅ Razorpay auto-payment flow
+  const handleRazorpay = async (plan: typeof PLANS[0]) => {
+    if (!user) return;
     setLoadingPlan(plan.id);
 
-    try {
-      const ok = await loadRazorpayScript();
-      if (!ok || !window.Razorpay) {
-        toast.error("Razorpay script load nahi hua");
-        return;
-      }
+    // Load Razorpay script
+    if (!window.Razorpay) {
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      document.body.appendChild(script);
+      await new Promise((res) => (script.onload = res));
+    }
 
-      const amountPaise = plan.id === "monthly" ? 19900 : 150000;
+    const options = {
+      key: "rzp_live_YourKeyHere", // 🔑 Replace with your Razorpay key
+      amount: plan.price * 100, // paise
+      currency: "INR",
+      name: "Ledgerly",
+      description: `${plan.label} Plan`,
+      prefill: { email: user.email },
+      theme: { color: "#6366f1" },
+      handler: async (response: any) => {
+        // ✅ Payment successful — activate premium immediately
+        const now = new Date();
+        const premiumUntil = new Date(now.getTime() + plan.days * 24 * 60 * 60 * 1000);
 
-      // Create order (server)
-      const resp = await fetch("/api/create-order", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount: amountPaise,
-          currency: "INR",
-          notes: {
-            user_id: profile!.id,
+        const { error } = await supabase
+          .from("profiles")
+          .update({
+            is_premium: true,
+            premium_type: plan.id,
+            premium_until: premiumUntil.toISOString(),
+            updated_at: now.toISOString(),
+          } as any)
+          .eq("id", user.id);
+
+        if (error) {
+          toast.error("Activation failed. Contact support with payment ID: " + response.razorpay_payment_id);
+        } else {
+          // Save payment record
+          await supabase.from("purchase_requests").insert({
+            user_id: user.id,
             plan: plan.id,
-            email: profile!.email || "",
-          },
-        }),
-      });
+            amount: plan.price,
+            status: "approved",
+            txn_id: response.razorpay_payment_id,
+          } as any);
 
-      const data = await resp.json();
-      const orderId = data?.orderId || data?.id || null;
+          await refreshProfile();
+          toast.success(`🎉 Premium activated! Valid for ${plan.days} days.`);
+        }
+        setLoadingPlan(null);
+      },
+      modal: {
+        ondismiss: () => setLoadingPlan(null),
+      },
+    };
 
-      if (!resp.ok || !orderId) {
-        console.error("create-order failed:", data);
-        toast.error("Order create failed. Vercel logs check karo.");
-        return;
-      }
+    const rzp = new window.Razorpay(options);
+    rzp.open();
+  };
 
-      const options = {
-        key: keyId,
-        order_id: orderId,
-        amount: amountPaise,
-        currency: "INR",
-        name: "Ledgerly",
-        description: `Ledgerly ${plan.name} Plan`,
-        prefill: { email: profile!.email || "" },
-        notes: {
-          user_id: profile!.id, // webhook isse user ko identify karega
-          plan: plan.id,
-        },
-        handler: function () {
-          toast.success("Payment successful ✅ Premium webhook se activate hoga...");
-          // Webhook ko 2-5 sec lag sakte hai
-          setTimeout(() => window.location.reload(), 2500);
-        },
-        modal: {
-          ondismiss: function () {},
-        },
-      };
+  // ✅ Manual UPI payment (screenshot/txn submit)
+  const handleManualSubmit = async () => {
+    if (!user || !selectedPlan || !txnId.trim()) {
+      toast.error("Please enter transaction ID");
+      return;
+    }
 
-      const rzp = new window.Razorpay(options);
-      rzp.on("payment.failed", function (resp: any) {
-        console.error(resp);
-        toast.error("Payment failed");
-      });
-      rzp.open();
-    } finally {
-      setLoadingPlan(null);
+    const plan = PLANS.find((p) => p.id === selectedPlan)!;
+    setLoadingPlan(selectedPlan);
+
+    const { error } = await supabase.from("purchase_requests").insert({
+      user_id: user.id,
+      plan: selectedPlan,
+      amount: plan.price,
+      status: "pending",
+      txn_id: txnId.trim(),
+    } as any);
+
+    setLoadingPlan(null);
+
+    if (error) {
+      toast.error("Submission failed: " + error.message);
+    } else {
+      toast.success("✅ Payment submitted! Owner will verify within 24 hours.");
+      setTxnId("");
+      setShowManual(false);
     }
   };
 
-  return (
-    <div className="animate-fade-in space-y-8">
-      <div className="text-center">
-        <h1 className="text-3xl font-display font-bold">Upgrade to Premium</h1>
-        <p className="mt-2 text-muted-foreground">Unlock all features with a premium plan</p>
+  if (isPremium) {
+    return (
+      <div className="animate-fade-in text-center py-16 space-y-4">
+        <Crown className="h-12 w-12 text-yellow-500 mx-auto" />
+        <h2 className="text-2xl font-bold">You're Premium! 🎉</h2>
+        <p className="text-muted-foreground">
+          Plan: <strong>{profile?.premium_type}</strong> · Expires:{" "}
+          <strong>
+            {profile?.premium_until
+              ? new Date(profile.premium_until).toLocaleDateString()
+              : "—"}
+          </strong>
+        </p>
+      </div>
+    );
+  }
 
-        {isPremium && (
-          <Badge className="mt-3 bg-success text-success-foreground">
-            <Star className="mr-1 h-3 w-3" /> Premium Active
-          </Badge>
+  return (
+    <div className="animate-fade-in space-y-6 max-w-3xl mx-auto">
+      <div className="text-center space-y-2">
+        <h1 className="text-3xl font-display font-bold flex items-center justify-center gap-2">
+          <Crown className="h-7 w-7 text-yellow-500" /> Upgrade to Premium
+        </h1>
+        {isTrialActive && (
+          <p className="text-muted-foreground">
+            Trial active — <strong>{trialDaysLeft} days left</strong>
+          </p>
+        )}
+        {!isTrialActive && (
+          <div className="flex items-center justify-center gap-2 text-destructive text-sm">
+            <AlertCircle className="h-4 w-4" />
+            Your free trial has expired. Upgrade to continue.
+          </div>
         )}
       </div>
 
-      <div className="mx-auto grid max-w-3xl gap-6 md:grid-cols-2">
-        {plans.map((plan) => (
-          <Card key={plan.id} className={`glass-card relative ${plan.popular ? "ring-2 ring-accent" : ""}`}>
-            {plan.popular && (
-              <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                <Badge className="gradient-accent text-accent-foreground">Most Popular</Badge>
-              </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        {PLANS.map((plan) => (
+          <Card
+            key={plan.id}
+            className={`glass-card relative ${plan.badge ? "border-primary" : ""}`}
+          >
+            {plan.badge && (
+              <Badge className="absolute -top-3 left-1/2 -translate-x-1/2 bg-primary">
+                {plan.badge}
+              </Badge>
             )}
-
-            <CardHeader>
-              <CardTitle className="font-display">{plan.name}</CardTitle>
-              <CardDescription>
-                <span className="text-3xl font-bold text-foreground">
-                  {plan.currency}
-                  {plan.price}
+            <CardHeader className="text-center">
+              <CardTitle className="text-xl">{plan.label}</CardTitle>
+              <p className="text-3xl font-bold">
+                ₹{plan.price}
+                <span className="text-sm font-normal text-muted-foreground">
+                  /{plan.id === "yearly" ? "year" : "month"}
                 </span>
-                <span className="text-muted-foreground">{plan.period}</span>
-              </CardDescription>
+              </p>
             </CardHeader>
-
             <CardContent className="space-y-4">
               <ul className="space-y-2">
                 {plan.features.map((f) => (
@@ -185,28 +195,60 @@ export default function PricingPage() {
                 ))}
               </ul>
 
+              {/* Razorpay auto pay */}
               <Button
                 className="w-full"
-                variant={plan.popular ? "default" : "outline"}
-                onClick={() => openCheckout(plan)}
-                disabled={isPremium || loadingPlan !== null}
+                onClick={() => handleRazorpay(plan)}
+                disabled={!!loadingPlan}
               >
-                {isPremium
-                  ? "Active"
-                  : loadingPlan === plan.id
-                  ? "Opening..."
-                  : plan.id === "monthly"
-                  ? "Pay ₹199"
-                  : "Pay ₹1500"}
+                {loadingPlan === plan.id ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                ) : null}
+                Pay ₹{plan.price} Online
+              </Button>
+
+              {/* Manual UPI */}
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => {
+                  setSelectedPlan(plan.id);
+                  setShowManual(true);
+                }}
+              >
+                Pay via UPI / Screenshot
               </Button>
             </CardContent>
           </Card>
         ))}
       </div>
 
-      <p className="text-center text-xs text-muted-foreground">
-        Payment ke baad Premium auto-activate hoga via Razorpay webhook.
-      </p>
+      {/* Manual payment form */}
+      {showManual && selectedPlan && (
+        <Card className="glass-card">
+          <CardContent className="space-y-4 pt-6">
+            <h3 className="font-semibold">Manual Payment Verification</h3>
+            <p className="text-sm text-muted-foreground">
+              Pay ₹{PLANS.find((p) => p.id === selectedPlan)?.price} to UPI:{" "}
+              <strong>yourname@upi</strong> and enter transaction ID below.
+            </p>
+            <Input
+              placeholder="Enter Transaction ID / UTR number"
+              value={txnId}
+              onChange={(e) => setTxnId(e.target.value)}
+            />
+            <div className="flex gap-2">
+              <Button onClick={handleManualSubmit} disabled={!!loadingPlan}>
+                {loadingPlan ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                Submit for Verification
+              </Button>
+              <Button variant="outline" onClick={() => setShowManual(false)}>
+                Cancel
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
