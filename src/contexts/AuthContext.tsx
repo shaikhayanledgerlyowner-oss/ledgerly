@@ -13,6 +13,10 @@ interface UserProfile {
   is_premium: boolean;
   display_name: string | null;
   avatar_url: string | null;
+  premium_until: string | null;
+  premium_type: string | null;
+  trial_ends_at: string | null;
+  created_at: string | null;
 }
 
 interface AuthContextType {
@@ -22,6 +26,9 @@ interface AuthContextType {
   loading: boolean;
   isOwner: boolean;
   isPremium: boolean;
+  isTrialActive: boolean;
+  isTrialExpired: boolean;
+  trialDaysLeft: number;
   userCurrency: string;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
@@ -58,6 +65,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       is_premium: email === OWNER_EMAIL,
       display_name: pickDisplayName(u),
       avatar_url: pickAvatar(u),
+      // ✅ New user ko 7 days trial
+      trial_ends_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     };
 
     const { data, error } = await supabase
@@ -114,13 +123,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setProfile(null);
       return;
     }
+
+    // ✅ Premium expiry check
+    let effectivePremium = !!row.is_premium;
+    if (effectivePremium && row.premium_until) {
+      const expiry = new Date(row.premium_until);
+      if (expiry < new Date()) {
+        effectivePremium = false;
+        // Expired — DB mein update karo
+        supabase
+          .from("profiles")
+          .update({ is_premium: false })
+          .eq("id", row.id)
+          .then(() => {});
+      }
+    }
+
     setProfile({
       id: row.id,
       email: row.email,
       role: row.role as UserRole,
-      is_premium: !!row.is_premium,
+      is_premium: effectivePremium,
       display_name: row.display_name ?? null,
       avatar_url: row.avatar_url ?? null,
+      premium_until: row.premium_until ?? null,
+      premium_type: row.premium_type ?? null,
+      trial_ends_at: row.trial_ends_at ?? null,
+      created_at: row.created_at ?? null,
     });
   };
 
@@ -177,9 +206,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return profile?.role === "OWNER" || user?.email === OWNER_EMAIL;
   }, [profile?.role, user?.email]);
 
+  // ✅ Trial logic
+  const trialDaysLeft = useMemo(() => {
+    if (!profile?.trial_ends_at) return 0;
+    const diff = new Date(profile.trial_ends_at).getTime() - Date.now();
+    return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+  }, [profile?.trial_ends_at]);
+
+  const isTrialActive = useMemo(() => {
+    if (isOwner) return false;
+    if (!profile?.trial_ends_at) return false;
+    return new Date(profile.trial_ends_at) > new Date();
+  }, [profile?.trial_ends_at, isOwner]);
+
+  const isTrialExpired = useMemo(() => {
+    if (isOwner) return false;
+    if (!profile?.trial_ends_at) return true;
+    return new Date(profile.trial_ends_at) <= new Date();
+  }, [profile?.trial_ends_at, isOwner]);
+
+  // ✅ Premium: owner ya valid premium_until wala
   const isPremium = useMemo(() => {
-    return isOwner || (profile?.is_premium ?? false);
-  }, [isOwner, profile?.is_premium]);
+    if (isOwner) return true;
+    if (!profile?.is_premium) return false;
+    if (!profile?.premium_until) return false;
+    return new Date(profile.premium_until) > new Date();
+  }, [isOwner, profile?.is_premium, profile?.premium_until]);
 
   return (
     <AuthContext.Provider
@@ -190,6 +242,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loading,
         isOwner,
         isPremium,
+        isTrialActive,
+        isTrialExpired,
+        trialDaysLeft,
         userCurrency,
         signOut,
         refreshProfile,
