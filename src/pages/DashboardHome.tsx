@@ -12,6 +12,9 @@ import {
   IndianRupee,
   ArrowRight,
   TrendingDown,
+  Crown,
+  AlertTriangle,
+  Sparkles,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -45,14 +48,12 @@ type TabKey = "tables" | "documents";
 function toNumberSafe(v: any): number {
   if (v === null || v === undefined || v === "") return 0;
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
-
   const s = String(v);
   const cleaned = s.replace(/[₹,\s]/g, "");
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : 0;
 }
 
-/** ✅ DAILY key: YYYY-MM-DD */
 function dayKey(dateStr: string) {
   const d = new Date(dateStr);
   const y = d.getFullYear();
@@ -61,7 +62,6 @@ function dayKey(dateStr: string) {
   return `${y}-${m}-${day}`;
 }
 
-/** ✅ DAILY label: "26 Feb" */
 function dayLabelFromKey(key: string) {
   const [y, m, d] = key.split("-").map(Number);
   const dt = new Date(y, (m ?? 1) - 1, d ?? 1);
@@ -92,8 +92,123 @@ type TableAnalytics = {
   net: number;
 };
 
+// ✅ Premium / Trial Banner Component
+function PlanBanner() {
+  const { isPremium, isTrialActive, isTrialExpired, trialDaysLeft, profile, isOwner } = useAuth();
+  const navigate = useNavigate();
+
+  if (isOwner) return null;
+
+  // ✅ Active Premium
+  if (isPremium) {
+    const expiryDate = profile?.premium_until
+      ? new Date(profile.premium_until).toLocaleDateString("en-IN", {
+          day: "numeric", month: "short", year: "numeric",
+        })
+      : null;
+
+    // warn if expiring in 5 days
+    const daysLeft = profile?.premium_until
+      ? Math.ceil((new Date(profile.premium_until).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+      : 999;
+
+    if (daysLeft <= 5) {
+      return (
+        <Card className="glass-card border-warning/50 bg-warning/5">
+          <CardContent className="flex items-center justify-between py-3 flex-wrap gap-3">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="h-5 w-5 text-warning shrink-0" />
+              <div>
+                <p className="text-sm font-semibold text-warning">Premium expiring soon!</p>
+                <p className="text-xs text-muted-foreground">
+                  {daysLeft} day{daysLeft !== 1 ? "s" : ""} left · Expires {expiryDate}
+                </p>
+              </div>
+            </div>
+            <Button size="sm" onClick={() => navigate("/pricing")}>
+              Renew Now
+            </Button>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    return (
+      <Card className="glass-card border-success/30 bg-success/5">
+        <CardContent className="flex items-center gap-3 py-3">
+          <Crown className="h-5 w-5 text-yellow-500 shrink-0" />
+          <div>
+            <p className="text-sm font-semibold text-success">
+              Premium Active
+              <span className="ml-2 text-xs font-normal text-muted-foreground capitalize">
+                ({profile?.premium_type} plan)
+              </span>
+            </p>
+            {expiryDate && (
+              <p className="text-xs text-muted-foreground">Valid until {expiryDate}</p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // ✅ Trial Active
+  if (isTrialActive) {
+    const urgency = trialDaysLeft <= 2;
+    return (
+      <Card className={cn(
+        "glass-card",
+        urgency ? "border-destructive/40 bg-destructive/5" : "border-primary/30 bg-primary/5"
+      )}>
+        <CardContent className="flex items-center justify-between py-3 flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <Clock className={cn("h-5 w-5 shrink-0", urgency ? "text-destructive" : "text-primary")} />
+            <div>
+              <p className={cn("text-sm font-semibold", urgency ? "text-destructive" : "text-primary")}>
+                Free Trial — {trialDaysLeft} day{trialDaysLeft !== 1 ? "s" : ""} left
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {urgency
+                  ? "Trial almost over! Upgrade now to keep access."
+                  : "Upgrade anytime to unlock unlimited access."}
+              </p>
+            </div>
+          </div>
+          <Button size="sm" variant={urgency ? "destructive" : "default"} onClick={() => navigate("/pricing")}>
+            <Sparkles className="h-3 w-3 mr-1" />
+            Upgrade
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // ✅ Trial Expired & Not Premium
+  if (isTrialExpired) {
+    return (
+      <Card className="glass-card border-destructive/50 bg-destructive/5">
+        <CardContent className="flex items-center justify-between py-3 flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="h-5 w-5 text-destructive shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-destructive">Free Trial Expired</p>
+              <p className="text-xs text-muted-foreground">Upgrade to continue using all features.</p>
+            </div>
+          </div>
+          <Button size="sm" variant="destructive" onClick={() => navigate("/pricing")}>
+            <Crown className="h-3 w-3 mr-1" />
+            Upgrade Now
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return null;
+}
+
 export default function DashboardHome() {
-  // ✅ userCurrency added
   const { profile, isOwner, isPremium, userCurrency } = useAuth();
   const navigate = useNavigate();
 
@@ -151,11 +266,9 @@ export default function DashboardHome() {
         pending: (p as any).count ?? 0,
       });
 
-      // --------- DOCUMENTS ANALYTICS ----------
       let docsRev = 0;
       let docsExp = 0;
       const docsDayMap: Record<string, { revenue: number; expense: number }> = {};
-
       const ensureDocsDay = (k: string) => {
         if (!docsDayMap[k]) docsDayMap[k] = { revenue: 0, expense: 0 };
       };
@@ -168,7 +281,6 @@ export default function DashboardHome() {
       let invCount = 0;
       let quoCount = 0;
       let billCount = 0;
-
       const statusMap: Record<string, { count: number; total: number }> = {};
 
       (invoiceData ?? []).forEach((inv: any) => {
@@ -215,10 +327,8 @@ export default function DashboardHome() {
       setDocExpenses(docsExp);
       setDocChartData(mapToChartPoints(docsDayMap));
 
-      // --------- TABLE ANALYTICS ----------
       let tblRev = 0;
       let tblExp = 0;
-
       const allDayMap: Record<string, { revenue: number; expense: number }> = {};
       const ensureAllDay = (k: string) => {
         if (!allDayMap[k]) allDayMap[k] = { revenue: 0, expense: 0 };
@@ -237,8 +347,10 @@ export default function DashboardHome() {
       const tableIds = (allTables ?? []).map((x: any) => x.id);
 
       const perTableMoney: Record<string, { revenue: number; expense: number }> = {};
-      const perTableDayMap: Record<string, Record<string, { revenue: number; expense: number }>> =
-        {};
+      const perTableDayMap: Record<
+        string,
+        Record<string, { revenue: number; expense: number }>
+      > = {};
 
       const ensureTbl = (tid: string) => {
         if (!perTableMoney[tid]) perTableMoney[tid] = { revenue: 0, expense: 0 };
@@ -256,7 +368,10 @@ export default function DashboardHome() {
           .select("table_id,name,type")
           .in("table_id", tableIds);
 
-        const colsByTable = new Map<string, { name: string; bucket: "revenue" | "expense" }[]>();
+        const colsByTable = new Map<
+          string,
+          { name: string; bucket: "revenue" | "expense" }[]
+        >();
 
         (colsData ?? []).forEach((c: any) => {
           const typeOk = c.type === "number" || c.type === "currency";
@@ -265,7 +380,8 @@ export default function DashboardHome() {
           const colName = String(c.name || "").trim();
           if (!colName) return;
 
-          const looksRelevant = amountNameRegex.test(colName) || expenseNameRegex.test(colName);
+          const looksRelevant =
+            amountNameRegex.test(colName) || expenseNameRegex.test(colName);
           if (!looksRelevant) return;
 
           const bucket: "revenue" | "expense" = expenseNameRegex.test(colName)
@@ -298,13 +414,11 @@ export default function DashboardHome() {
             if (col.bucket === "revenue") {
               tblRev += num;
               allDayMap[dk].revenue += num;
-              perTableMoney[r.table_id] = perTableMoney[r.table_id] ?? { revenue: 0, expense: 0 };
               perTableMoney[r.table_id].revenue += num;
               perTableDayMap[r.table_id][dk].revenue += num;
             } else {
               tblExp += num;
               allDayMap[dk].expense += num;
-              perTableMoney[r.table_id] = perTableMoney[r.table_id] ?? { revenue: 0, expense: 0 };
               perTableMoney[r.table_id].expense += num;
               perTableDayMap[r.table_id][dk].expense += num;
             }
@@ -347,7 +461,6 @@ export default function DashboardHome() {
             } as TableAnalytics;
           })
         );
-
         setTableAnalytics(counts.sort((a, b) => Math.abs(b.net) - Math.abs(a.net)));
       } else {
         setTableAnalytics([]);
@@ -385,7 +498,8 @@ export default function DashboardHome() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile, isOwner]);
 
-  const displayName = profile?.display_name || profile?.email?.split("@")[0] || "User";
+  const displayName =
+    profile?.display_name || profile?.email?.split("@")[0] || "User";
 
   const activeRevenue = activeTab === "tables" ? tableRevenue : docRevenue;
   const activeExpenses = activeTab === "tables" ? tableExpenses : docExpenses;
@@ -452,6 +566,9 @@ export default function DashboardHome() {
         </p>
       </div>
 
+      {/* ✅ Premium / Trial Banner */}
+      <PlanBanner />
+
       {/* MAIN TOGGLE */}
       <Card className="glass-card">
         <CardContent className="py-3 flex items-center justify-between flex-wrap gap-3">
@@ -465,7 +582,6 @@ export default function DashboardHome() {
               <Table2 className="h-4 w-4" />
               Tables
             </Button>
-
             <Button
               size="sm"
               variant={activeTab === "documents" ? "default" : "outline"}
@@ -476,14 +592,13 @@ export default function DashboardHome() {
               Documents
             </Button>
           </div>
-
           <p className="text-xs text-muted-foreground">
             Viewing: <span className="font-medium capitalize">{activeTab}</span>
           </p>
         </CardContent>
       </Card>
 
-      {/* ✅ Stat Cards — formatCurrency se */}
+      {/* Stat Cards */}
       <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
         <StatCard
           title={activeTab === "tables" ? "Tables Revenue" : "Documents Revenue"}
@@ -505,9 +620,9 @@ export default function DashboardHome() {
         />
         <StatCard
           title="Plan"
-          value={isPremium ? "Premium" : "Free"}
-          icon={CreditCard}
-          color="text-accent"
+          value={isPremium ? "Premium ✨" : "Free Trial"}
+          icon={isPremium ? Crown : Clock}
+          color={isPremium ? "text-yellow-500" : "text-muted-foreground"}
         />
       </div>
 
@@ -520,10 +635,12 @@ export default function DashboardHome() {
                 <CardTitle className="text-base">{chartTitle}</CardTitle>
                 <p className="text-xs text-muted-foreground">{chartSubtitle}</p>
               </div>
-
               {activeTab === "tables" && (
                 <div className="min-w-[220px]">
-                  <Select value={selectedAnalyticsTableId} onValueChange={setSelectedAnalyticsTableId}>
+                  <Select
+                    value={selectedAnalyticsTableId}
+                    onValueChange={setSelectedAnalyticsTableId}
+                  >
                     <SelectTrigger className="h-9">
                       <SelectValue placeholder="Select table" />
                     </SelectTrigger>
@@ -590,7 +707,12 @@ export default function DashboardHome() {
                 className="w-full justify-start gap-3 h-auto py-2.5"
                 onClick={a.onClick}
               >
-                <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", a.bg)}>
+                <div
+                  className={cn(
+                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+                    a.bg
+                  )}
+                >
                   <a.icon className={cn("h-4 w-4", a.color)} />
                 </div>
                 <div className="text-left">
@@ -607,14 +729,21 @@ export default function DashboardHome() {
       <Card className="glass-card">
         <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-3">
           <CardTitle className="text-base">Details</CardTitle>
-
           <Button
             size="sm"
             variant="outline"
             className="gap-2"
-            onClick={() => navigate(activeTab === "tables" ? "/dashboard/tables" : "/dashboard/invoices")}
+            onClick={() =>
+              navigate(
+                activeTab === "tables" ? "/dashboard/tables" : "/dashboard/invoices"
+              )
+            }
           >
-            {activeTab === "tables" ? <Table2 className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
+            {activeTab === "tables" ? (
+              <Table2 className="h-4 w-4" />
+            ) : (
+              <FileText className="h-4 w-4" />
+            )}
             Open {activeTab === "tables" ? "Tables" : "Documents"}
           </Button>
         </CardHeader>
@@ -624,13 +753,20 @@ export default function DashboardHome() {
             <>
               <div className="flex items-center justify-between">
                 <p className="text-sm font-medium">Your Tables (Analysis)</p>
-                <Button variant="link" size="sm" className="gap-1" onClick={() => navigate("/dashboard/tables")}>
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="gap-1"
+                  onClick={() => navigate("/dashboard/tables")}
+                >
                   View Details <ArrowRight className="h-3 w-3" />
                 </Button>
               </div>
 
               {tableAnalytics.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No tables yet. Create one to get started.</p>
+                <p className="text-sm text-muted-foreground">
+                  No tables yet. Create one to get started.
+                </p>
               ) : (
                 <div className="space-y-2">
                   {tableAnalytics.slice(0, 8).map((t) => (
@@ -643,14 +779,23 @@ export default function DashboardHome() {
                         <div className="flex items-center gap-3">
                           <Table2 className="h-4 w-4 text-muted-foreground" />
                           <span className="font-medium text-sm">{t.name}</span>
-                          <span className="text-xs text-muted-foreground">({t.rowCount} rows)</span>
+                          <span className="text-xs text-muted-foreground">
+                            ({t.rowCount} rows)
+                          </span>
                         </div>
-
-                        {/* ✅ formatCurrency se */}
                         <div className="flex items-center gap-4 text-xs">
-                          <span className="text-success font-medium">+{formatCurrency(t.revenue, userCurrency)}</span>
-                          <span className="text-destructive font-medium">-{formatCurrency(t.expense, userCurrency)}</span>
-                          <span className={cn("font-semibold", t.net >= 0 ? "text-primary" : "text-destructive")}>
+                          <span className="text-success font-medium">
+                            +{formatCurrency(t.revenue, userCurrency)}
+                          </span>
+                          <span className="text-destructive font-medium">
+                            -{formatCurrency(t.expense, userCurrency)}
+                          </span>
+                          <span
+                            className={cn(
+                              "font-semibold",
+                              t.net >= 0 ? "text-primary" : "text-destructive"
+                            )}
+                          >
                             Net: {formatCurrency(t.net, userCurrency)}
                           </span>
                         </div>
@@ -688,7 +833,12 @@ export default function DashboardHome() {
             <>
               <div className="flex items-center justify-between">
                 <p className="text-sm font-medium">Your Documents</p>
-                <Button variant="link" size="sm" className="gap-1" onClick={() => navigate("/dashboard/invoices")}>
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="gap-1"
+                  onClick={() => navigate("/dashboard/invoices")}
+                >
                   View Details <ArrowRight className="h-3 w-3" />
                 </Button>
               </div>
@@ -708,18 +858,25 @@ export default function DashboardHome() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b">
-                        <th className="px-3 py-2 text-left font-medium text-muted-foreground">Status</th>
-                        <th className="px-3 py-2 text-right font-medium text-muted-foreground">Count</th>
-                        <th className="px-3 py-2 text-right font-medium text-muted-foreground">Total</th>
+                        <th className="px-3 py-2 text-left font-medium text-muted-foreground">
+                          Status
+                        </th>
+                        <th className="px-3 py-2 text-right font-medium text-muted-foreground">
+                          Count
+                        </th>
+                        <th className="px-3 py-2 text-right font-medium text-muted-foreground">
+                          Total
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
-                      {/* ✅ formatCurrency se */}
                       {docStatusBreakdown.map((s) => (
                         <tr key={s.label} className="border-b border-border/50">
                           <td className="px-3 py-2 capitalize">{s.label}</td>
                           <td className="px-3 py-2 text-right">{s.count}</td>
-                          <td className="px-3 py-2 text-right font-medium">{formatCurrency(s.total, userCurrency)}</td>
+                          <td className="px-3 py-2 text-right font-medium">
+                            {formatCurrency(s.total, userCurrency)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -734,8 +891,14 @@ export default function DashboardHome() {
       {isOwner && stats.pending > 0 && (
         <Card className="glass-card border-warning/30">
           <CardContent className="flex items-center justify-between py-4">
-            <p className="text-sm font-medium">{stats.pending} pending verification request(s)</p>
-            <Button size="sm" variant="outline" onClick={() => navigate("/dashboard/verification")}>
+            <p className="text-sm font-medium">
+              {stats.pending} pending verification request(s)
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => navigate("/dashboard/verification")}
+            >
               Review
             </Button>
           </CardContent>
@@ -768,7 +931,12 @@ function StatCard({
   return (
     <Card className="glass-card">
       <CardContent className="flex items-center gap-4 pt-6">
-        <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-muted", color)}>
+        <div
+          className={cn(
+            "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-muted",
+            color
+          )}
+        >
           <Icon className="h-5 w-5" />
         </div>
         <div>
