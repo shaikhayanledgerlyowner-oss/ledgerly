@@ -53,7 +53,7 @@ export default function PricingPage() {
     }
 
     const options = {
-      key: "rzp_live_YourKeyHere", // 🔑 Replace with your Razorpay key
+      key: "rzp_test_SLUD3JXB56tNDG",
       amount: plan.price * 100, // paise
       currency: "INR",
       name: "Ledgerly",
