@@ -37,16 +37,53 @@ export default function VerificationPage() {
 
   if (!isOwner) return <Navigate to="/dashboard" replace />;
 
-  const handleAction = async (id: string, userId: string, plan: string, action: "approved" | "rejected") => {
-    await supabase.from("purchase_requests").update({ status: action }).eq("id", id);
+  const handleAction = async (
+    id: string,
+    userId: string,
+    plan: string,
+    action: "approved" | "rejected"
+  ) => {
+    // ✅ Purchase request update karo
+    await supabase
+      .from("purchase_requests")
+      .update({ status: action })
+      .eq("id", id);
+
     if (action === "approved") {
-      await supabase.from("user_profiles").update({
-        is_premium: true,
-        premium_plan: plan,
-        premium_since: new Date().toISOString(),
-      } as any).eq("id", userId);
+      // ✅ Premium expiry calculate karo
+      const now = new Date();
+      let premiumUntil: Date;
+
+      if (plan === "yearly") {
+        premiumUntil = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+      } else {
+        // monthly (default)
+        premiumUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+      }
+
+      // ✅ Profile update karo — is_premium + premium_until + premium_type
+      const { error } = await supabase
+        .from("profiles")
+        .update({
+          is_premium: true,
+          premium_type: plan,
+          premium_until: premiumUntil.toISOString(),
+          updated_at: now.toISOString(),
+        } as any)
+        .eq("id", userId);
+
+      if (error) {
+        toast.error("Profile update failed: " + error.message);
+        return;
+      }
+
+      toast.success(
+        `✅ User approved! Premium active until ${premiumUntil.toLocaleDateString()}`
+      );
+    } else {
+      toast.success("Request rejected");
     }
-    toast.success(action === "approved" ? "User approved — Premium activated!" : "Request rejected");
+
     loadRequests();
   };
 
@@ -56,19 +93,27 @@ export default function VerificationPage() {
     return "bg-warning text-warning-foreground";
   };
 
+  const getPlanLabel = (plan: string) => {
+    if (plan === "yearly") return "Yearly (365 days)";
+    return "Monthly (30 days)";
+  };
+
   return (
     <div className="animate-fade-in space-y-6">
       <h1 className="text-2xl font-display font-bold flex items-center gap-2">
         <Shield className="h-6 w-6" /> Verification Queue
       </h1>
       <div className="space-y-3">
-        {requests.map(r => (
+        {requests.map((r) => (
           <Card key={r.id} className="glass-card">
             <CardContent className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-4">
               <div>
-                <p className="font-medium">{(r.user_profiles as any)?.email || r.user_id}</p>
+                <p className="font-medium">
+                  {(r.user_profiles as any)?.email || r.user_id}
+                </p>
                 <p className="text-sm text-muted-foreground">
-                  {r.plan} · ₹{r.amount} · {new Date(r.created_at).toLocaleDateString()}
+                  {getPlanLabel(r.plan)} · ₹{r.amount} ·{" "}
+                  {new Date(r.created_at).toLocaleDateString()}
                   {r.txn_id && <> · TXN: {r.txn_id}</>}
                 </p>
               </div>
@@ -76,10 +121,24 @@ export default function VerificationPage() {
                 <Badge className={statusColor(r.status)}>{r.status}</Badge>
                 {r.status === "pending" && (
                   <>
-                    <Button size="sm" variant="outline" className="text-success" onClick={() => handleAction(r.id, r.user_id, r.plan, "approved")}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-success"
+                      onClick={() =>
+                        handleAction(r.id, r.user_id, r.plan, "approved")
+                      }
+                    >
                       <CheckCircle className="mr-1 h-4 w-4" /> Approve
                     </Button>
-                    <Button size="sm" variant="outline" className="text-destructive" onClick={() => handleAction(r.id, r.user_id, r.plan, "rejected")}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-destructive"
+                      onClick={() =>
+                        handleAction(r.id, r.user_id, r.plan, "rejected")
+                      }
+                    >
                       <XCircle className="mr-1 h-4 w-4" /> Reject
                     </Button>
                   </>
@@ -88,7 +147,9 @@ export default function VerificationPage() {
             </CardContent>
           </Card>
         ))}
-        {requests.length === 0 && <p className="text-muted-foreground text-sm">No purchase requests.</p>}
+        {requests.length === 0 && (
+          <p className="text-muted-foreground text-sm">No purchase requests.</p>
+        )}
       </div>
     </div>
   );
