@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   LayoutDashboard, Table2, FileText, CreditCard, Settings, Bell, LogOut,
-  BookOpen, Shield, BarChart3, Menu, Wallet
+  BookOpen, Shield, BarChart3, Menu, Wallet, FilePen
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
@@ -18,6 +18,7 @@ const navItems = [
   { to: "/dashboard/tables", icon: Table2, label: "Tables" },
   { to: "/dashboard/analytics", icon: BarChart3, label: "Analytics" },
   { to: "/dashboard/invoices", icon: FileText, label: "Documents" },
+  { to: "/dashboard/pdf-editor", icon: FilePen, label: "PDF Editor" },
   { to: "/dashboard/pricing", icon: CreditCard, label: "Pricing" },
   { to: "/dashboard/settings", icon: Settings, label: "Settings" },
 ];
@@ -33,6 +34,7 @@ const pageTitles: Record<string, string> = {
   "/dashboard/tables": "Tables",
   "/dashboard/analytics": "Analytics",
   "/dashboard/invoices": "Documents",
+  "/dashboard/pdf-editor": "PDF Editor",
   "/dashboard/pricing": "Pricing",
   "/dashboard/notifications": "Notifications",
   "/dashboard/settings": "Settings",
