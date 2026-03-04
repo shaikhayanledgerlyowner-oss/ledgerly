@@ -55,10 +55,7 @@
     "jspdf-autotable": "^5.0.7",
     "lucide-react": "^0.462.0",
     "next-themes": "^0.3.0",
-<<<<<<< HEAD
     "pdfjs-dist": "^5.5.207",
-=======
->>>>>>> b6c33f6bf513e47e7aea47b01f9a5349211baf89
     "razorpay": "^2.9.6",
     "react": "^18.3.1",
     "react-day-picker": "^8.10.1",
