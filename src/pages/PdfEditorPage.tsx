@@ -14,20 +14,16 @@ async function loadScript(src: string): Promise<void> {
   if (document.querySelector(`script[src="${src}"]`)) return;
   return new Promise((resolve, reject) => {
     const s = document.createElement("script");
-    s.src = src;
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error(`Failed to load ${src}`));
+    s.src = src; s.onload = () => resolve(); s.onerror = () => reject(new Error(`Failed: ${src}`));
     document.head.appendChild(s);
   });
 }
-
 async function getPdfJs(): Promise<any> {
   await loadScript(PDFJS_CDN);
   const lib = (window as any).pdfjsLib;
   lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
   return lib;
 }
-
 async function getPdfLib(): Promise<any> {
   await loadScript(PDFLIB_CDN);
   return (window as any).PDFLib;
@@ -40,14 +36,16 @@ interface TextBlock {
   editedText: string;
   pdfX: number; pdfY: number; pdfW: number; pdfH: number; pdfFontSize: number;
   canvasX: number; canvasY: number; canvasW: number; canvasH: number;
-  r: number; g: number; b: number;
   bold: boolean;
+  // The exact pixel snapshot of background BEFORE any text was drawn
+  bgSnapshot: ImageData | null;
 }
 
 export default function PdfEditorPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const cleanSnapshotRef = useRef<ImageData | null>(null);
+  // Two canvases: base (original PDF render) + working (what user sees)
+  const baseCanvasRef = useRef<HTMLCanvasElement>(document.createElement("canvas"));
 
   const [pdfBytes, setPdfBytes] = useState<ArrayBuffer | null>(null);
   const [pdfDoc, setPdfDoc] = useState<any>(null);
@@ -62,19 +60,32 @@ export default function PdfEditorPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
 
-  const redrawEdits = useCallback((ctx: CanvasRenderingContext2D, blocks: TextBlock[]) => {
-    if (cleanSnapshotRef.current) {
-      ctx.putImageData(cleanSnapshotRef.current, 0, 0);
-    }
+  // Apply all current edits onto working canvas using base canvas as background
+  const applyAllEdits = useCallback((blocks: TextBlock[]) => {
+    const canvas = canvasRef.current;
+    const base = baseCanvasRef.current;
+    if (!canvas || !base) return;
+    const ctx = canvas.getContext("2d")!;
+
+    // Start fresh from original PDF render
+    ctx.drawImage(base, 0, 0);
+
+    // For each edited block: restore background patch then draw new text
     for (const b of blocks) {
       if (b.editedText === b.originalText) continue;
-      // White out original area
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(b.canvasX - 2, b.canvasY - 2, b.canvasW + 24, b.canvasH + 6);
+
+      // Restore exact background pixels from base canvas
+      const baseCtx = base.getContext("2d")!;
+      const patch = baseCtx.getImageData(
+        Math.floor(b.canvasX - 2), Math.floor(b.canvasY - 2),
+        Math.ceil(b.canvasW + 24), Math.ceil(b.canvasH + 6)
+      );
+      ctx.putImageData(patch, Math.floor(b.canvasX - 2), Math.floor(b.canvasY - 2));
+
       // Draw new text
       const fs = Math.max(b.canvasH * 0.80, 7);
-      ctx.fillStyle = `rgb(${b.r},${b.g},${b.b})`;
       ctx.font = `${b.bold ? "bold " : ""}${fs}px Arial`;
+      ctx.fillStyle = "#000000";
       ctx.textBaseline = "top";
       ctx.fillText(b.editedText, b.canvasX, b.canvasY + 1);
     }
@@ -87,18 +98,28 @@ export default function PdfEditorPage() {
       const page = await doc.getPage(pageNum);
       const viewport = page.getViewport({ scale: sc });
       const canvas = canvasRef.current;
+      const base = baseCanvasRef.current;
       const ctx = canvas.getContext("2d")!;
+      const baseCtx = base.getContext("2d")!;
+
       canvas.width = viewport.width;
       canvas.height = viewport.height;
+      base.width = viewport.width;
+      base.height = viewport.height;
 
-      await page.render({ canvasContext: ctx, viewport }).promise;
+      // Render PDF to base canvas (this is the "clean" original)
+      await page.render({ canvasContext: baseCtx, viewport }).promise;
 
+      // Copy base to working canvas
+      ctx.drawImage(base, 0, 0);
+
+      // Extract text positions
       const textContent = await page.getTextContent();
       const blocks: TextBlock[] = [];
 
       for (let i = 0; i < textContent.items.length; i++) {
         const item = textContent.items[i] as any;
-        if (!item.str) continue;
+        if (!item.str?.trim()) continue;
         const tx = item.transform;
         const pdfX = tx[4], pdfY = tx[5];
         const pdfFontSize = Math.abs(tx[3]) || 12;
@@ -121,18 +142,21 @@ export default function PdfEditorPage() {
           editedText: prev?.editedText ?? item.str,
           pdfX, pdfY, pdfW, pdfH, pdfFontSize,
           canvasX, canvasY, canvasW, canvasH,
-          r: 0, g: 0, b: 0,
           bold: item.fontName?.toLowerCase().includes("bold") ?? false,
+          bgSnapshot: null,
         });
       }
 
       setTextBlocks(blocks);
-      cleanSnapshotRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      redrawEdits(ctx, blocks);
+
+      // Apply any existing edits
+      const edited = blocks.filter(b => b.editedText !== b.originalText);
+      if (edited.length > 0) applyAllEdits(blocks);
+
     } finally {
       setRendering(false);
     }
-  }, [redrawEdits]);
+  }, [applyAllEdits]);
 
   useEffect(() => {
     if (pdfDoc) renderPage(pdfDoc, currentPage, scale, textBlocks);
@@ -143,24 +167,18 @@ export default function PdfEditorPage() {
     if (!file) return;
     if (file.type !== "application/pdf") { toast.error("PDF file upload karo"); return; }
     e.target.value = "";
-    setLoading(true);
-    setEditingId(null);
-    setTextBlocks([]);
+    setLoading(true); setEditingId(null); setTextBlocks([]);
     setFileName(file.name.replace(/\.pdf$/i, ""));
     try {
       const bytes = await file.arrayBuffer();
       setPdfBytes(bytes.slice(0));
       const pdfjsLib = await getPdfJs();
       const doc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
-      setPdfDoc(doc);
-      setNumPages(doc.numPages);
-      setCurrentPage(1);
+      setPdfDoc(doc); setNumPages(doc.numPages); setCurrentPage(1);
       toast.success("PDF load ho gaya — kisi bhi text pe click karo edit karne ke liye!");
     } catch (err: any) {
       toast.error("PDF load failed: " + err.message);
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -178,10 +196,15 @@ export default function PdfEditorPage() {
     );
 
     if (hit) {
-      // White out that area on canvas so input appears cleanly
+      // Restore background patch on working canvas so original text disappears
       const ctx = canvas.getContext("2d")!;
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(hit.canvasX - 2, hit.canvasY - 2, hit.canvasW + 24, hit.canvasH + 6);
+      const baseCtx = baseCanvasRef.current.getContext("2d")!;
+      const patch = baseCtx.getImageData(
+        Math.floor(hit.canvasX - 2), Math.floor(hit.canvasY - 2),
+        Math.ceil(hit.canvasW + 24), Math.ceil(hit.canvasH + 6)
+      );
+      ctx.putImageData(patch, Math.floor(hit.canvasX - 2), Math.floor(hit.canvasY - 2));
+
       setEditingId(hit.id);
       setEditValue(hit.editedText);
     }
@@ -192,16 +215,12 @@ export default function PdfEditorPage() {
     const updated = textBlocks.map(b => b.id === editingId ? { ...b, editedText: editValue } : b);
     setTextBlocks(updated);
     setEditingId(null);
-    const canvas = canvasRef.current!;
-    const ctx = canvas.getContext("2d")!;
-    redrawEdits(ctx, updated);
+    applyAllEdits(updated);
   };
 
   const cancelEdit = () => {
     setEditingId(null);
-    const canvas = canvasRef.current!;
-    const ctx = canvas.getContext("2d")!;
-    redrawEdits(ctx, textBlocks);
+    applyAllEdits(textBlocks);
   };
 
   const handleDownload = async () => {
@@ -218,16 +237,40 @@ export default function PdfEditorPage() {
       for (const block of textBlocks) {
         if (block.editedText === block.originalText) continue;
         const page = pages[block.pageIndex];
+        const { height: pageH } = page.getSize();
+
+        // Get background color at that location by sampling from base canvas
+        const base = baseCanvasRef.current;
+        const baseCtx = base.getContext("2d")!;
+        // Sample a few pixels to find background color
+        const sampleX = Math.floor(block.canvasX);
+        const sampleY = Math.floor(block.canvasY);
+        let bgR = 1, bgG = 1, bgB = 1;
+        try {
+          // Sample pixels above/below the text for background
+          const above = baseCtx.getImageData(sampleX, Math.max(0, sampleY - 3), 1, 1);
+          bgR = above.data[0] / 255;
+          bgG = above.data[1] / 255;
+          bgB = above.data[2] / 255;
+        } catch (e) { bgR = bgG = bgB = 1; }
+
+        // Cover original text with sampled background color
         page.drawRectangle({
-          x: block.pdfX - 1, y: block.pdfY - block.pdfH - 1,
-          width: block.pdfW + 10, height: block.pdfH + 3,
-          color: rgb(1, 1, 1),
+          x: block.pdfX - 1,
+          y: block.pdfY - block.pdfH - 1,
+          width: block.pdfW + 8,
+          height: block.pdfH + 3,
+          color: rgb(bgR, bgG, bgB),
+          opacity: 1,
         });
+
+        // Draw new text
         page.drawText(block.editedText, {
-          x: block.pdfX, y: block.pdfY - block.pdfH * 0.1,
+          x: block.pdfX,
+          y: block.pdfY - block.pdfH * 0.15,
           size: Math.max(block.pdfFontSize, 6),
           font: block.bold ? boldFont : font,
-          color: rgb(block.r / 255, block.g / 255, block.b / 255),
+          color: rgb(0, 0, 0),
           maxWidth: block.pdfW + 60,
         });
       }
@@ -235,15 +278,12 @@ export default function PdfEditorPage() {
       const bytes = await pdfLibDoc.save();
       const blob = new Blob([bytes], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = `${fileName}-edited.pdf`; a.click();
+      const a = document.createElement("a"); a.href = url; a.download = `${fileName}-edited.pdf`; a.click();
       URL.revokeObjectURL(url);
       toast.success("PDF download ho gaya!");
     } catch (err: any) {
       toast.error("Download failed: " + err.message);
-    } finally {
-      setDownloading(false);
-    }
+    } finally { setDownloading(false); }
   };
 
   const editedCount = textBlocks.filter(b => b.editedText !== b.originalText).length;
@@ -330,55 +370,40 @@ export default function PdfEditorPage() {
               <Loader2 className="h-6 w-6 animate-spin text-primary" />
             </div>
           )}
-
-          <div className="relative">
+          <div className="relative inline-block">
             <canvas
               ref={canvasRef}
               style={{ maxWidth: "100%", cursor: editingId ? "default" : "text", display: "block" }}
               onClick={handleCanvasClick}
             />
-
-            {/* Floating input positioned OVER the canvas at the exact text location */}
+            {/* Floating input */}
             {editingId && editingBlock && canvasRef.current && (() => {
-              const canvas = canvasRef.current;
+              const canvas = canvasRef.current!;
               const rect = canvas.getBoundingClientRect();
-              const dispScaleX = rect.width / canvas.width;
-              const dispScaleY = rect.height / canvas.height;
+              const dX = rect.width / canvas.width;
+              const dY = rect.height / canvas.height;
               const b = editingBlock;
-              const left = b.canvasX * dispScaleX - 2;
-              const top = b.canvasY * dispScaleY - 2;
-              const width = Math.max(b.canvasW * dispScaleX + 24, 80);
-              const height = Math.max(b.canvasH * dispScaleY + 4, 18);
-              const fontSize = Math.max(b.canvasH * 0.80 * dispScaleY, 7);
-
+              const left = b.canvasX * dX - 2;
+              const top = b.canvasY * dY - 2;
+              const width = Math.max(b.canvasW * dX + 24, 80);
+              const height = Math.max(b.canvasH * dY + 4, 16);
+              const fontSize = Math.max(b.canvasH * 0.80 * dY, 7);
               return (
-                <div
-                  className="absolute z-20"
-                  style={{ left, top }}
-                  onClick={e => e.stopPropagation()}
-                >
+                <div className="absolute z-20" style={{ left, top }} onClick={e => e.stopPropagation()}>
                   <input
                     autoFocus
                     value={editValue}
                     onChange={e => setEditValue(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === "Enter") commitEdit();
-                      if (e.key === "Escape") cancelEdit();
-                    }}
+                    onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") cancelEdit(); }}
                     style={{
-                      fontSize,
-                      height,
-                      width,
+                      fontSize, height, width,
                       fontWeight: b.bold ? "bold" : "normal",
-                      padding: "0 3px",
-                      lineHeight: 1,
-                      background: "white",
+                      padding: "0 2px", lineHeight: 1,
+                      background: "rgba(255,255,255,0.92)",
                       border: "2px solid #3b82f6",
-                      borderRadius: 3,
-                      outline: "none",
-                      boxShadow: "0 2px 10px rgba(59,130,246,0.3)",
-                      display: "block",
-                      color: "#000",
+                      borderRadius: 3, outline: "none",
+                      boxShadow: "0 2px 8px rgba(59,130,246,0.25)",
+                      display: "block", color: "#000",
                     }}
                   />
                   <div className="flex gap-1 mt-1">
