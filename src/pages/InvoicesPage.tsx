@@ -39,9 +39,23 @@ import { toast } from "sonner";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-// ✅ PDF.js for parsing uploaded PDFs
-import * as pdfjsLib from "pdfjs-dist";
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
+// ✅ PDF.js loaded dynamically from CDN (no npm package needed)
+const PDFJS_CDN = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+const PDFJS_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+async function getPdfjsLib(): Promise<any> {
+  if ((window as any).pdfjsLib) return (window as any).pdfjsLib;
+  await new Promise<void>((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = PDFJS_CDN;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Failed to load PDF.js"));
+    document.head.appendChild(script);
+  });
+  const lib = (window as any).pdfjsLib;
+  lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+  return lib;
+}
 
 type DocType = "invoice" | "quotation" | "bill";
 
@@ -322,6 +336,7 @@ export default function InvoicesPage() {
 
     try {
       const arrayBuffer = await file.arrayBuffer();
+      const pdfjsLib = await getPdfjsLib();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
       let fullText = "";
