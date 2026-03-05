@@ -18,7 +18,8 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Camera, Upload, Trash2 } from "lucide-react";
+import { Camera, Upload, Trash2, Lock, Eye, EyeOff } from "lucide-react";
+import { hashPin, clearPinSession } from "@/components/PinLock";
 
 const countries = [
   { code: "IN", name: "India", currency: "INR" },
@@ -104,7 +105,36 @@ export default function SettingsPage() {
   };
 
   const uploadFile = async (bucket: string, file: File, folder: string) => {
-    if (!profile) return null;
+    const savePin = async () => {
+    if (pinInput.length !== 4 || !/^\d{4}$/.test(pinInput)) {
+      toast.error("PIN 4 digits ka hona chahiye"); return;
+    }
+    if (pinStep === "set") {
+      setPinStep("confirm"); setPinConfirm(""); return;
+    }
+    if (pinStep === "confirm") {
+      if (pinInput !== pinConfirm) {
+        toast.error("PIN match nahi hua! Dobara try karo.");
+        setPinStep("set"); setPinInput(""); setPinConfirm(""); return;
+      }
+      setPinLoading(true);
+      const hash = await hashPin(pinInput);
+      const { error } = await supabase.from("profiles").update({ pin_hash: hash } as any).eq("id", profile!.id);
+      if (error) toast.error(error.message);
+      else { toast.success("PIN set ho gaya! ✅"); setHasPinSet(true); setPinStep("idle"); setPinInput(""); setPinConfirm(""); }
+      setPinLoading(false);
+    }
+  };
+
+  const removePin = async () => {
+    setPinLoading(true);
+    const { error } = await supabase.from("profiles").update({ pin_hash: null } as any).eq("id", profile!.id);
+    if (error) toast.error(error.message);
+    else { toast.success("PIN hata diya gaya"); setHasPinSet(false); setPinStep("idle"); clearPinSession(); }
+    setPinLoading(false);
+  };
+
+  if (!profile) return null;
     const ext = file.name.split(".").pop() || "png";
     const path = `${profile.id}/${folder}_${Date.now()}.${ext}`;
     const { error } = await supabase.storage.from(bucket).upload(path, file, { upsert: true });
@@ -530,6 +560,73 @@ export default function SettingsPage() {
           </div>
 
           <Button onClick={saveReminder}>💾 Save Reminder</Button>
+        </CardContent>
+      </Card>
+
+      {/* PIN Lock Card */}
+      <Card className="glass-card">
+        <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Lock className="h-5 w-5" /> App PIN Lock</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Har baar app kholne pe Google login ki jagah sirf 4-digit PIN maanga jayega.
+          </p>
+
+          {hasPinSet ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-green-600 text-sm font-medium">
+                <Lock className="h-4 w-4" /> PIN active hai
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => { setPinStep("set"); setPinInput(""); setPinConfirm(""); }}>
+                  PIN Change Karo
+                </Button>
+                <Button variant="destructive" size="sm" onClick={removePin} disabled={pinLoading}>
+                  {pinLoading ? "Hata raha hai..." : "PIN Hatao"}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Button size="sm" className="gap-2" onClick={() => { setPinStep("set"); setPinInput(""); }}>
+              <Lock className="h-4 w-4" /> PIN Set Karo
+            </Button>
+          )}
+
+          {(pinStep === "set" || pinStep === "confirm") && (
+            <div className="space-y-3 p-4 rounded-xl border border-border bg-muted/30">
+              <p className="text-sm font-medium">
+                {pinStep === "set" ? "Naya 4-digit PIN daalo:" : "PIN confirm karo (dobara daalo):"}
+              </p>
+              <div className="relative w-40">
+                <Input
+                  type={showPin ? "text" : "password"}
+                  maxLength={4}
+                  value={pinStep === "set" ? pinInput : pinConfirm}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, "").slice(0, 4);
+                    if (pinStep === "set") setPinInput(val);
+                    else setPinConfirm(val);
+                  }}
+                  placeholder="••••"
+                  className="text-center text-2xl tracking-widest pr-8"
+                />
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+                  onClick={() => setShowPin(s => !s)}
+                >
+                  {showPin ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              <div className="flex gap-2">
+                <Button size="sm" onClick={savePin} disabled={pinLoading}>
+                  {pinStep === "set" ? "Aage Bado →" : (pinLoading ? "Save ho raha hai..." : "PIN Save Karo ✅")}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => { setPinStep("idle"); setPinInput(""); setPinConfirm(""); }}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
