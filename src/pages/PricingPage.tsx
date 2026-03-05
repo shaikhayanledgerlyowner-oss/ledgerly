@@ -35,9 +35,6 @@ const PLANS = [
 export default function PricingPage() {
   const { user, profile, isPremium, isTrialActive, trialDaysLeft, refreshProfile } = useAuth();
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
-  const [txnId, setTxnId] = useState("");
-  const [selectedPlan, setSelectedPlan] = useState<string | null>(null);
-  const [showManual, setShowManual] = useState(false);
 
   // ✅ Razorpay auto-payment flow
   const handleRazorpay = async (plan: typeof PLANS[0]) => {
@@ -101,34 +98,7 @@ export default function PricingPage() {
     rzp.open();
   };
 
-  // ✅ Manual UPI payment (screenshot/txn submit)
-  const handleManualSubmit = async () => {
-    if (!user || !selectedPlan || !txnId.trim()) {
-      toast.error("Please enter transaction ID");
-      return;
-    }
 
-    const plan = PLANS.find((p) => p.id === selectedPlan)!;
-    setLoadingPlan(selectedPlan);
-
-    const { error } = await supabase.from("purchase_requests").insert({
-      user_id: user.id,
-      plan: selectedPlan,
-      amount: plan.price,
-      status: "pending",
-      txn_id: txnId.trim(),
-    } as any);
-
-    setLoadingPlan(null);
-
-    if (error) {
-      toast.error("Submission failed: " + error.message);
-    } else {
-      toast.success("✅ Payment submitted! Owner will verify within 24 hours.");
-      setTxnId("");
-      setShowManual(false);
-    }
-  };
 
   if (isPremium) {
     return (
@@ -206,48 +176,10 @@ export default function PricingPage() {
                 ) : null}
                 Pay ₹{plan.price} Online
               </Button>
-
-              {/* Manual UPI */}
-              <Button
-                variant="outline"
-                className="w-full"
-                onClick={() => {
-                  setSelectedPlan(plan.id);
-                  setShowManual(true);
-                }}
-              >
-                Pay via UPI / Screenshot
-              </Button>
             </CardContent>
           </Card>
         ))}
       </div>
-
-      {/* Manual payment form */}
-      {showManual && selectedPlan && (
-        <Card className="glass-card">
-          <CardContent className="space-y-4 pt-6">
-            <h3 className="font-semibold">Manual Payment Verification</h3>
-            <p className="text-sm text-muted-foreground">
-              Pay ₹{PLANS.find((p) => p.id === selectedPlan)?.price} to UPI:{" "}
-              <strong>yourname@upi</strong> and enter transaction ID below.
-            </p>
-            <Input
-              placeholder="Enter Transaction ID / UTR number"
-              value={txnId}
-              onChange={(e) => setTxnId(e.target.value)}
-            />
-            <div className="flex gap-2">
-              <Button onClick={handleManualSubmit} disabled={!!loadingPlan}>
-                {loadingPlan ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                Submit for Verification
-              </Button>
-              <Button variant="outline" onClick={() => setShowManual(false)}>
-                Cancel
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
       )}
     </div>
   );
