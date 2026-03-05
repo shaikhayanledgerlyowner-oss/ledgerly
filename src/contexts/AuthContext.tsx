@@ -29,6 +29,8 @@ interface AuthContextType {
   isTrialActive: boolean;
   isTrialExpired: boolean;
   trialDaysLeft: number;
+  premiumDaysLeft: number;
+  hasAccess: boolean;
   userCurrency: string;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
@@ -209,8 +211,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // ✅ Trial logic
   const trialDaysLeft = useMemo(() => {
     if (!profile?.trial_ends_at) return 0;
-    const diff = new Date(profile.trial_ends_at).getTime() - Date.now();
-    return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+    const now = new Date();
+    const end = new Date(profile.trial_ends_at);
+    const diffMs = end.getTime() - now.getTime();
+    if (diffMs <= 0) return 0;
+    return Math.floor(diffMs / (1000 * 60 * 60 * 24));
   }, [profile?.trial_ends_at]);
 
   const isTrialActive = useMemo(() => {
@@ -233,6 +238,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return new Date(profile.premium_until) > new Date();
   }, [isOwner, profile?.is_premium, profile?.premium_until]);
 
+  // Days left in premium plan
+  const premiumDaysLeft = useMemo(() => {
+    if (isOwner) return 999;
+    if (!profile?.premium_until) return 0;
+    const diff = new Date(profile.premium_until).getTime() - Date.now();
+    return Math.max(0, Math.floor(diff / (1000 * 60 * 60 * 24)));
+  }, [isOwner, profile?.premium_until]);
+
+  // hasAccess = can use premium features (trial active OR premium active)
+  const hasAccess = useMemo(() => {
+    if (isOwner) return true;
+    if (isPremium) return true;
+    return isTrialActive;
+  }, [isOwner, isPremium, isTrialActive]);
+
   return (
     <AuthContext.Provider
       value={{
@@ -245,6 +265,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isTrialActive,
         isTrialExpired,
         trialDaysLeft,
+        premiumDaysLeft,
+        hasAccess,
         userCurrency,
         signOut,
         refreshProfile,
