@@ -33,29 +33,12 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 
-import { Plus, Download, Trash2, FileText, Pencil, Upload, Loader2, FileUp } from "lucide-react";
+import { Plus, Download, Trash2, FileText, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-// ✅ PDF.js loaded dynamically from CDN (no npm package needed)
-const PDFJS_CDN = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-const PDFJS_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-
-async function getPdfjsLib(): Promise<any> {
-  if ((window as any).pdfjsLib) return (window as any).pdfjsLib;
-  await new Promise<void>((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = PDFJS_CDN;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Failed to load PDF.js"));
-    document.head.appendChild(script);
-  });
-  const lib = (window as any).pdfjsLib;
-  lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
-  return lib;
-}
 
 type DocType = "invoice" | "quotation" | "bill";
 
@@ -139,90 +122,6 @@ async function urlToDataURL(url: string): Promise<string | null> {
   } catch { return null; }
 }
 
-// ✅ Smart PDF text parser — extract fields from raw text
-function parsePdfText(text: string): Partial<InvoiceData> {
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-  const result: Partial<InvoiceData> = {
-    type: "invoice",
-    doc_no: "",
-    customer_name: "",
-    customer_address: "",
-    customer_phone: "",
-    currency_code: "INR",
-    items: [],
-    totals: {
-      subtotal: 0, tax_percent: 0, tax_amount: 0, total: 0,
-      terms: DEFAULT_TERMS, note: DEFAULT_NOTE,
-    },
-  };
-
-  // Detect type
-  const textLower = text.toLowerCase();
-  if (textLower.includes("quotation") || textLower.includes("quote")) result.type = "quotation";
-  else if (textLower.includes("bill") || textLower.includes("receipt")) result.type = "bill";
-  else result.type = "invoice";
-
-  // Doc number
-  const docNoMatch = text.match(/(?:invoice|quotation|bill|receipt|no\.?|number|#)\s*[:\-]?\s*([A-Z0-9\-\/]+)/i);
-  if (docNoMatch) result.doc_no = docNoMatch[1];
-
-  // Phone
-  const phoneMatch = text.match(/(?:phone|mobile|mob|tel|ph)[:\s]*([+\d\s\-]{7,15})/i);
-  if (phoneMatch) result.customer_name = "";
-
-  // Customer name — look for "Bill To" / "To:" / "Customer" patterns
-  const billToMatch = text.match(/(?:bill\s*to|shipped?\s*to|customer|client)[:\s\n]+([A-Za-z\s\.]{3,40})/i);
-  if (billToMatch) result.customer_name = billToMatch[1].trim();
-
-  // Phone
-  const phone = text.match(/(?:\+91[\-\s]?)?[6-9]\d{9}/);
-  if (phone) result.customer_phone = phone[0];
-
-  // Total
-  const totalMatch = text.match(/(?:grand\s*total|total\s*amount|net\s*total|total)[:\s]*(?:rs\.?|inr|₹|\$|€|£)?\s*([\d,]+\.?\d*)/i);
-  if (totalMatch) {
-    const total = parseFloat(totalMatch[1].replace(/,/g, ""));
-    if (!isNaN(total) && result.totals) result.totals.total = total;
-  }
-
-  // Subtotal
-  const subtotalMatch = text.match(/(?:subtotal|sub\s*total)[:\s]*(?:rs\.?|inr|₹|\$|€|£)?\s*([\d,]+\.?\d*)/i);
-  if (subtotalMatch) {
-    const sub = parseFloat(subtotalMatch[1].replace(/,/g, ""));
-    if (!isNaN(sub) && result.totals) result.totals.subtotal = sub;
-  }
-
-  // Tax
-  const taxMatch = text.match(/(?:tax|gst|vat|igst|cgst|sgst)[:\s]*(?:\d+%?)?\s*(?:rs\.?|inr|₹|\$|€|£)?\s*([\d,]+\.?\d*)/i);
-  if (taxMatch) {
-    const tax = parseFloat(taxMatch[1].replace(/,/g, ""));
-    if (!isNaN(tax) && result.totals) result.totals.tax_amount = tax;
-  }
-
-  // Try to extract table rows — look for number patterns: qty × rate = amount
-  const itemLines: InvoiceItem[] = [];
-  const itemRegex = /(.{3,40}?)\s+(\d+(?:\.\d+)?)\s+(?:rs\.?|₹|\$|€|£)?\s*([\d,]+(?:\.\d+)?)\s+(?:rs\.?|₹|\$|€|£)?\s*([\d,]+(?:\.\d+)?)/gi;
-  let match;
-  while ((match = itemRegex.exec(text)) !== null) {
-    const desc = match[1].trim();
-    const qty = parseFloat(match[2]);
-    const rate = parseFloat(match[3].replace(/,/g, ""));
-    const amount = parseFloat(match[4].replace(/,/g, ""));
-    if (desc && qty > 0 && rate > 0 && amount > 0) {
-      itemLines.push({ description: desc, hsn: "", qty, rate, amount });
-    }
-  }
-
-  if (itemLines.length > 0) {
-    result.items = itemLines;
-  } else {
-    // Fallback: at least one empty item
-    result.items = [{ description: "", hsn: "", qty: 1, rate: 0, amount: 0 }];
-  }
-
-  return result;
-}
-
 const EMPTY_FORM: InvoiceData = {
   type: "invoice",
   doc_no: "",
@@ -242,13 +141,6 @@ export default function InvoicesPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [branding, setBranding] = useState<any>(null);
   const [form, setForm] = useState<InvoiceData>(EMPTY_FORM);
-
-  // ✅ PDF Upload state
-  const pdfInputRef = useRef<HTMLInputElement>(null);
-  const [pdfParsing, setPdfParsing] = useState(false);
-  const [showPdfDialog, setShowPdfDialog] = useState(false);
-  const [pdfRawText, setPdfRawText] = useState("");
-
   const refresh = async () => {
     if (!profile) return;
     const { data, error } = await supabase.from("invoices").select("*").eq("user_id", profile.id).order("created_at", { ascending: false });
@@ -324,60 +216,6 @@ export default function InvoicesPage() {
     setDocs((prev) => prev.filter((d) => d.id !== id));
     toast.success("Deleted");
   };
-
-  // ✅ PDF UPLOAD HANDLER
-  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.type !== "application/pdf") return toast.error("Please upload a PDF file");
-
-    setPdfParsing(true);
-    e.target.value = "";
-
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const pdfjsLib = await getPdfjsLib();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-
-      let fullText = "";
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const content = await page.getTextContent();
-        const pageText = content.items.map((item: any) => item.str).join(" ");
-        fullText += pageText + "\n";
-      }
-
-      setPdfRawText(fullText);
-
-      // Parse and pre-fill form
-      const parsed = parsePdfText(fullText);
-      setForm({
-        type: parsed.type ?? "invoice",
-        doc_no: parsed.doc_no ?? "",
-        customer_name: parsed.customer_name ?? "",
-        customer_address: parsed.customer_address ?? "",
-        customer_phone: parsed.customer_phone ?? "",
-        items: parsed.items && parsed.items.length > 0 ? parsed.items : [{ description: "", hsn: "", qty: 1, rate: 0, amount: 0 }],
-        totals: {
-          subtotal: parsed.totals?.subtotal ?? 0,
-          tax_percent: parsed.totals?.tax_percent ?? 0,
-          tax_amount: parsed.totals?.tax_amount ?? 0,
-          total: parsed.totals?.total ?? 0,
-          terms: DEFAULT_TERMS,
-          note: DEFAULT_NOTE,
-        },
-        currency_code: "INR",
-      });
-
-      setShowPdfDialog(true);
-      toast.success("PDF parsed! Review and edit the data below.");
-    } catch (err: any) {
-      toast.error("PDF parse failed: " + (err?.message || "Unknown error"));
-    } finally {
-      setPdfParsing(false);
-    }
-  };
-
   const downloadPDF = async (doc: any) => {
     try {
       const type: DocType = (doc.type || "invoice") as DocType;
@@ -548,51 +386,12 @@ export default function InvoicesPage() {
 
   return (
     <div className="animate-fade-in space-y-6">
-      {/* ✅ Hidden PDF input */}
-      <input ref={pdfInputRef} type="file" accept="application/pdf" className="hidden" onChange={handlePdfUpload} />
-
-      {/* ✅ PDF Upload → Edit Dialog */}
-      <Dialog open={showPdfDialog} onOpenChange={setShowPdfDialog}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <FileUp className="h-5 w-5 text-primary" />
-              Edit Imported PDF Document
-            </DialogTitle>
-          </DialogHeader>
-          <div className="bg-muted/40 rounded-lg px-4 py-2 mb-2">
-            <p className="text-xs text-muted-foreground">
-              ✅ Data extracted from your PDF. Review and edit below, then save.
-            </p>
-          </div>
-          {renderForm()}
-          <Button onClick={async () => { await save(); setShowPdfDialog(false); }} className="w-full mt-4">
-            Save Document
-          </Button>
-        </DialogContent>
-      </Dialog>
-
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-display font-bold flex items-center gap-2">
           <FileText className="h-6 w-6" /> Documents
         </h1>
 
         <div className="flex gap-2 flex-wrap">
-          {/* ✅ Upload PDF Button */}
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-2"
-            onClick={() => pdfInputRef.current?.click()}
-            disabled={pdfParsing}
-          >
-            {pdfParsing ? (
-              <><Loader2 className="h-4 w-4 animate-spin" /> Parsing PDF...</>
-            ) : (
-              <><Upload className="h-4 w-4" /> Upload PDF</>
-            )}
-          </Button>
-
           <Dialog open={showCreate} onOpenChange={setShowCreate}>
             <DialogTrigger asChild>
               <Button size="sm" className="gap-2">
