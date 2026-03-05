@@ -141,7 +141,7 @@ function detectColumnType(values: any[]): ColumnType {
 }
 
 export default function TablesPage() {
-  const { profile } = useAuth();
+  const { profile, hasAccess } = useAuth();
   const userId = profile?.id;
 
   const [tables, setTables] = useState<DbTable[]>([]);
@@ -435,6 +435,7 @@ export default function TablesPage() {
   };
 
   const downloadSelectedTablePDF = () => {
+    if (!hasAccess) { toast.error("Trial khatam ho gaya! Download ke liye upgrade karo."); return; }
     if (!selectedTable) return toast.error("Select a table first");
     if (columns.length === 0) return toast.error("No columns to export");
     const doc = new jsPDF({ orientation: "l", unit: "pt", format: "a4" });
@@ -452,6 +453,7 @@ export default function TablesPage() {
   };
 
   const downloadSelectedTableExcel = () => {
+    if (!hasAccess) { toast.error("Trial khatam ho gaya! Download ke liye upgrade karo."); return; }
     if (!selectedTable) return toast.error("Select a table first");
     if (columns.length === 0) return toast.error("No columns to export");
     try {
@@ -586,8 +588,8 @@ export default function TablesPage() {
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
-                <Button variant="outline" size="sm" onClick={downloadSelectedTablePDF} className="gap-2"><Download className="w-4 h-4" />Download PDF</Button>
-                <Button variant="outline" size="sm" onClick={downloadSelectedTableExcel} className="gap-2"><FileSpreadsheet className="w-4 h-4" />Download Excel</Button>
+                <Button variant="outline" size="sm" onClick={downloadSelectedTablePDF} className="gap-2" disabled={!hasAccess}><Download className="w-4 h-4" />Download PDF</Button>
+                <Button variant="outline" size="sm" onClick={downloadSelectedTableExcel} className="gap-2" disabled={!hasAccess}><FileSpreadsheet className="w-4 h-4" />Download Excel</Button>
 
                 <Dialog open={isColumnDialogOpen} onOpenChange={setIsColumnDialogOpen}>
                   <DialogTrigger asChild><Button variant="outline" size="sm"><Plus className="w-4 h-4 mr-1" />Add Column</Button></DialogTrigger>
