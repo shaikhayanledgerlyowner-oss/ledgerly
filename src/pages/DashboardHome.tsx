@@ -108,30 +108,32 @@ function PlanBanner() {
       : null;
 
     // warn if expiring in 5 days
-    const daysLeft = profile?.premium_until
-      ? Math.ceil((new Date(profile.premium_until).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-      : 999;
+    const daysLeft = premiumDaysLeft;
 
-    if (daysLeft <= 5) {
-      return (
-        <Card className="glass-card border-warning/50 bg-warning/5">
-          <CardContent className="flex items-center justify-between py-3 flex-wrap gap-3">
-            <div className="flex items-center gap-3">
-              <AlertTriangle className="h-5 w-5 text-warning shrink-0" />
-              <div>
-                <p className="text-sm font-semibold text-warning">Premium expiring soon!</p>
-                <p className="text-xs text-muted-foreground">
-                  {daysLeft} day{daysLeft !== 1 ? "s" : ""} left · Expires {expiryDate}
-                </p>
-              </div>
+    return (
+      <Card className={`glass-card ${daysLeft <= 5 ? "border-warning/50 bg-warning/5" : "border-green-500/30 bg-green-500/5"}`}>
+        <CardContent className="flex items-center justify-between py-3 flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            {daysLeft <= 5
+              ? <AlertTriangle className="h-5 w-5 text-warning shrink-0" />
+              : <Crown className="h-5 w-5 text-yellow-500 shrink-0" />}
+            <div>
+              <p className={`text-sm font-semibold ${daysLeft <= 5 ? "text-warning" : "text-green-600"}`}>
+                {daysLeft <= 5 ? "Premium expiring soon!" : "Premium Active ✨"}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {daysLeft} day{daysLeft !== 1 ? "s" : ""} left · Expires {expiryDate}
+              </p>
             </div>
-            <Button size="sm" onClick={() => navigate("/pricing")}>
+          </div>
+          {daysLeft <= 5 && (
+            <Button size="sm" onClick={() => navigate("/dashboard/pricing")}>
               Renew Now
             </Button>
-          </CardContent>
-        </Card>
-      );
-    }
+          )}
+        </CardContent>
+      </Card>
+    );
 
     return (
       <Card className="glass-card border-success/30 bg-success/5">
@@ -175,7 +177,7 @@ function PlanBanner() {
               </p>
             </div>
           </div>
-          <Button size="sm" variant={urgency ? "destructive" : "default"} onClick={() => navigate("/pricing")}>
+          <Button size="sm" variant={urgency ? "destructive" : "default"} onClick={() => navigate("/dashboard/pricing")}>
             <Sparkles className="h-3 w-3 mr-1" />
             Upgrade
           </Button>
@@ -196,7 +198,7 @@ function PlanBanner() {
               <p className="text-xs text-muted-foreground">Upgrade to continue using all features.</p>
             </div>
           </div>
-          <Button size="sm" variant="destructive" onClick={() => navigate("/pricing")}>
+          <Button size="sm" variant="destructive" onClick={() => navigate("/dashboard/pricing")}>
             <Crown className="h-3 w-3 mr-1" />
             Upgrade Now
           </Button>
