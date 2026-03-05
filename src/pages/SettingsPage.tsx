@@ -87,6 +87,14 @@ export default function SettingsPage() {
   const [removingLogo, setRemovingLogo] = useState(false);
   const [removingSig, setRemovingSig] = useState(false);
 
+  // PIN state
+  const [pinStep, setPinStep] = useState<"idle" | "set" | "confirm">("idle");
+  const [pinInput, setPinInput] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
+  const [showPin, setShowPin] = useState(false);
+  const [hasPinSet, setHasPinSet] = useState(false);
+  const [pinLoading, setPinLoading] = useState(false);
+
   const initials = useMemo(() => {
     const base =
       (displayName?.trim() ? displayName : "") ||
@@ -197,6 +205,10 @@ export default function SettingsPage() {
     if (!profile) return;
     setDisplayName((profile as any).display_name || "");
     setAvatarUrl((profile as any).avatar_url || null);
+
+    // Check PIN
+    supabase.from("profiles").select("pin_hash").eq("id", profile.id).single()
+      .then(({ data }) => setHasPinSet(!!(data as any)?.pin_hash));
 
     (async () => {
       const { data: b, error: bErr } = await supabase.from("user_branding").select("*").eq("user_id", profile.id).maybeSingle();
