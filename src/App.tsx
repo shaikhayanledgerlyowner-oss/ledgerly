@@ -19,7 +19,6 @@ import NotificationsPage from "./pages/NotificationsPage";
 import WalletPage from "./pages/Walletpage";
 import SettingsPage from "./pages/SettingsPage";
 import VerificationPage from "./pages/VerificationPage";
-import PdfEditorPage from "./pages/PdfEditorPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -53,7 +52,6 @@ const App = () => (
               <Route path="wallet" element={<WalletPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="verification" element={<VerificationPage />} />
-              <Route path="pdf-editor" element={<PdfEditorPage />} />
             </Route>
 
             <Route path="*" element={<NotFound />} />
