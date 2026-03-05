@@ -15,8 +15,7 @@ import {
   Calculator,
   HelpCircle,
   Download,
-  FileSpreadsheet,
-  Upload,
+  FileSpreadsheet
 } from "lucide-react";
 
 import { useAuth } from "@/contexts/AuthContext";
@@ -61,7 +60,6 @@ import { toast } from "sonner";
 
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
 
 type ColumnType = "text" | "number" | "currency" | "date";
@@ -86,11 +84,6 @@ interface DbRow {
   table_id: string;
   row_data: Record<string, any> | null;
   created_at: string;
-}
-
-// ✅ Imported preview row type
-interface ImportPreviewRow {
-  [key: string]: any;
 }
 
 function toNumberSafe(v: any): number {
@@ -187,16 +180,6 @@ export default function TablesPage() {
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DbTable | null>(null);
-
-  // ✅ Excel Import State
-  const [showImportDialog, setShowImportDialog] = useState(false);
-  const [importHeaders, setImportHeaders] = useState<string[]>([]);
-  const [importRows, setImportRows] = useState<ImportPreviewRow[]>([]);
-  const [importMode, setImportMode] = useState<"new" | "existing">("new");
-  const [importNewTableName, setImportNewTableName] = useState("");
-  const [importTargetTableId, setImportTargetTableId] = useState<string>("");
-  const [importLoading, setImportLoading] = useState(false);
-  const importFileRef = useRef<HTMLInputElement>(null);
 
   const cellKey = (rowId: string, colName: string) => `${rowId}__${colName}`;
 
@@ -486,150 +469,6 @@ export default function TablesPage() {
   };
 
   // ✅ EXCEL / CSV IMPORT
-  const handleImportFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const ext = file.name.split(".").pop()?.toLowerCase();
-
-    const reader = new FileReader();
-
-    reader.onload = (evt) => {
-      try {
-        let headers: string[] = [];
-        let dataRows: ImportPreviewRow[] = [];
-
-        if (ext === "csv") {
-          const text = evt.target?.result as string;
-          const lines = text.split("\n").filter((l) => l.trim());
-          if (lines.length === 0) return toast.error("Empty CSV file");
-          headers = lines[0].split(",").map((h) => h.trim().replace(/^"|"$/g, ""));
-          dataRows = lines.slice(1).map((line) => {
-            const vals = line.split(",").map((v) => v.trim().replace(/^"|"$/g, ""));
-            const row: ImportPreviewRow = {};
-            headers.forEach((h, i) => { row[h] = vals[i] ?? ""; });
-            return row;
-          });
-        } else {
-          const data = new Uint8Array(evt.target?.result as ArrayBuffer);
-          const workbook = XLSX.read(data, { type: "array" });
-          const sheetName = workbook.SheetNames[0];
-          const sheet = workbook.Sheets[sheetName];
-          const json = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
-          if (json.length === 0) return toast.error("Empty Excel file");
-          headers = (json[0] as any[]).map((h) => String(h ?? "").trim()).filter(Boolean);
-          dataRows = json.slice(1).filter((row) => row.some((v) => v !== null && v !== undefined && v !== "")).map((row) => {
-            const obj: ImportPreviewRow = {};
-            headers.forEach((h, i) => { obj[h] = row[i] ?? ""; });
-            return obj;
-          });
-        }
-
-        if (headers.length === 0) return toast.error("No headers found in file");
-
-        setImportHeaders(headers);
-        setImportRows(dataRows);
-        setImportNewTableName(file.name.replace(/\.(xlsx|xls|csv)$/i, ""));
-        setImportTargetTableId(selectedTable?.id ?? tables[0]?.id ?? "");
-        setShowImportDialog(true);
-      } catch (err: any) {
-        toast.error("File parse failed: " + (err?.message || "Unknown error"));
-      }
-    };
-
-    if (ext === "csv") reader.readAsText(file);
-    else reader.readAsArrayBuffer(file);
-
-    // reset input so same file can be re-uploaded
-    e.target.value = "";
-  };
-
-  const handleImportConfirm = async () => {
-    if (!userId) return;
-    if (importRows.length === 0) return toast.error("No data to import");
-
-    setImportLoading(true);
-
-    try {
-      let tableId: string;
-      let existingColumns: DbColumn[] = [];
-
-      if (importMode === "new") {
-        const name = importNewTableName.trim() || "Imported Table";
-        const { data: newTable, error: tableErr } = await supabase
-          .from("user_tables")
-          .insert({ user_id: userId, name })
-          .select("*").single();
-
-        if (tableErr) throw tableErr;
-        tableId = (newTable as DbTable).id;
-
-        // Detect types and create columns
-        const colTypes: Record<string, ColumnType> = {};
-        importHeaders.forEach((h) => {
-          const vals = importRows.map((r) => r[h]);
-          colTypes[h] = detectColumnType(vals);
-        });
-
-        for (const h of importHeaders) {
-          const { error: colErr } = await supabase.from("user_columns").insert({
-            table_id: tableId, name: h, type: colTypes[h],
-          });
-          if (colErr) throw colErr;
-        }
-      } else {
-        // Existing table
-        tableId = importTargetTableId;
-        if (!tableId) throw new Error("Select a table to import into");
-
-        const { data: colData } = await supabase.from("user_columns").select("*").eq("table_id", tableId);
-        existingColumns = (colData ?? []) as DbColumn[];
-
-        // Add missing columns
-        const existingNames = existingColumns.map((c) => c.name);
-        for (const h of importHeaders) {
-          if (!existingNames.includes(h)) {
-            const vals = importRows.map((r) => r[h]);
-            const type = detectColumnType(vals);
-            const { error: colErr } = await supabase.from("user_columns").insert({ table_id: tableId, name: h, type });
-            if (colErr) throw colErr;
-          }
-        }
-      }
-
-      // Insert rows in batches of 50
-      const batchSize = 50;
-      for (let i = 0; i < importRows.length; i += batchSize) {
-        const batch = importRows.slice(i, i + batchSize).map((r) => ({
-          table_id: tableId,
-          row_data: r,
-        }));
-        const { error: rowErr } = await supabase.from("user_rows").insert(batch as any);
-        if (rowErr) throw rowErr;
-      }
-
-      toast.success(`✅ Imported ${importRows.length} rows successfully!`);
-      setShowImportDialog(false);
-      setImportHeaders([]);
-      setImportRows([]);
-
-      await loadTables();
-
-      // Navigate to imported table
-      const { data: allTables } = await supabase.from("user_tables").select("*").eq("user_id", userId).order("created_at", { ascending: true });
-      const targetTable = (allTables ?? []).find((t: any) => {
-        if (importMode === "new") return t.name === importNewTableName.trim();
-        return t.id === importTargetTableId;
-      }) as DbTable | undefined;
-      if (targetTable) setSelectedTable(targetTable);
-
-    } catch (e: any) {
-      toast.error("Import failed: " + (e?.message || "Unknown error"));
-    } finally {
-      setImportLoading(false);
-    }
-  };
-
   return (
     <>
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
@@ -647,107 +486,6 @@ export default function TablesPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* ✅ Excel Import Dialog */}
-      <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <FileSpreadsheet className="h-5 w-5 text-success" />
-              Import Excel / CSV
-            </DialogTitle>
-          </DialogHeader>
-
-          <div className="space-y-4">
-            {/* Mode toggle */}
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                variant={importMode === "new" ? "default" : "outline"}
-                onClick={() => setImportMode("new")}
-              >
-                Create New Table
-              </Button>
-              <Button
-                size="sm"
-                variant={importMode === "existing" ? "default" : "outline"}
-                onClick={() => setImportMode("existing")}
-                disabled={tables.length === 0}
-              >
-                Add to Existing Table
-              </Button>
-            </div>
-
-            {importMode === "new" ? (
-              <div className="space-y-2">
-                <label className="text-sm font-medium">New Table Name</label>
-                <Input
-                  value={importNewTableName}
-                  onChange={(e) => setImportNewTableName(e.target.value)}
-                  placeholder="e.g. Sales Data 2024"
-                />
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Select Table</label>
-                <Select value={importTargetTableId} onValueChange={setImportTargetTableId}>
-                  <SelectTrigger><SelectValue placeholder="Choose table" /></SelectTrigger>
-                  <SelectContent>
-                    {tables.map((t) => (
-                      <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  New columns from the file will be added automatically.
-                </p>
-              </div>
-            )}
-
-            {/* Preview */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">Preview</p>
-                <p className="text-xs text-muted-foreground">
-                  {importRows.length} rows · {importHeaders.length} columns
-                </p>
-              </div>
-              <div className="border rounded-lg overflow-auto max-h-48">
-                <table className="w-full text-xs">
-                  <thead className="bg-muted sticky top-0">
-                    <tr>
-                      {importHeaders.map((h) => (
-                        <th key={h} className="px-3 py-2 text-left font-medium whitespace-nowrap">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {importRows.slice(0, 10).map((r, i) => (
-                      <tr key={i} className="border-t border-border/50">
-                        {importHeaders.map((h) => (
-                          <td key={h} className="px-3 py-1.5 whitespace-nowrap">{String(r[h] ?? "")}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {importRows.length > 10 && (
-                <p className="text-xs text-muted-foreground text-center">
-                  Showing 10 of {importRows.length} rows
-                </p>
-              )}
-            </div>
-
-            <div className="flex gap-2 pt-2">
-              <Button onClick={handleImportConfirm} disabled={importLoading} className="flex-1">
-                {importLoading ? "Importing..." : `Import ${importRows.length} Rows`}
-              </Button>
-              <Button variant="outline" onClick={() => setShowImportDialog(false)}>Cancel</Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 animate-fade-in">
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -757,22 +495,6 @@ export default function TablesPage() {
           </div>
 
           <div className="flex gap-2 flex-wrap">
-            {/* ✅ Import Excel/CSV Button */}
-            <input
-              ref={importFileRef}
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              className="hidden"
-              onChange={handleImportFileChange}
-            />
-            <Button
-              variant="outline"
-              className="gap-2"
-              onClick={() => importFileRef.current?.click()}
-            >
-              <Upload className="w-4 h-4" />
-              Import Excel / CSV
-            </Button>
 
             <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
               <DialogTrigger asChild>
@@ -992,7 +714,6 @@ export default function TablesPage() {
             <p className="text-muted-foreground mb-4">Create your first table to start tracking data</p>
             <div className="flex gap-3 justify-center flex-wrap">
               <Button onClick={() => setIsCreateDialogOpen(true)} className="gap-2"><Plus className="w-4 h-4" />Create First Table</Button>
-              <Button variant="outline" onClick={() => importFileRef.current?.click()} className="gap-2"><Upload className="w-4 h-4" />Import Excel / CSV</Button>
             </div>
           </div>
         )}
