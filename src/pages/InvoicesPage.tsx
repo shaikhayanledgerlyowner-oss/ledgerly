@@ -134,7 +134,7 @@ const EMPTY_FORM: InvoiceData = {
 };
 
 export default function InvoicesPage() {
-  const { profile, isPremium } = useAuth();
+  const { profile, isPremium, hasAccess } = useAuth();
   const [docs, setDocs] = useState<any[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
@@ -217,6 +217,10 @@ export default function InvoicesPage() {
     toast.success("Deleted");
   };
   const downloadPDF = async (doc: any) => {
+    if (!hasAccess) {
+      toast.error("Trial khatam ho gaya! Download ke liye upgrade karo.");
+      return;
+    }
     try {
       const type: DocType = (doc.type || "invoice") as DocType;
       const title = docTitle(type);
@@ -429,7 +433,7 @@ export default function InvoicesPage() {
               </div>
               <div className="flex gap-2 shrink-0">
                 <Button variant="outline" size="icon" onClick={() => openEdit(d)} title="Edit Document"><Pencil className="h-4 w-4" /></Button>
-                <Button variant="outline" size="icon" onClick={() => downloadPDF(d)} title="Download PDF"><Download className="h-4 w-4" /></Button>
+                <Button variant="outline" size="icon" onClick={() => downloadPDF(d)} title="Download PDF" disabled={!hasAccess} className={!hasAccess ? "opacity-40 cursor-not-allowed" : ""}><Download className="h-4 w-4" /></Button>
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
                     <Button variant="outline" size="icon" className="text-destructive" title="Delete"><Trash2 className="h-4 w-4" /></Button>
