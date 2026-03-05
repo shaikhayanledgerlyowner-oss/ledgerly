@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import DashboardLayout from "@/components/DashboardLayout";
+import PinLock from "@/components/PinLock";
 
 import Index from "./pages/Index";
 import AuthPage from "./pages/AuthPage";
@@ -30,32 +31,34 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <AuthProvider>
-          <Routes>
-            <Route path="/" element={<Index />} />
-            <Route path="/auth" element={<AuthPage />} />
-            <Route path="/auth/callback" element={<AuthCallback />} />
+          <PinLock>
+            <Routes>
+              <Route path="/" element={<Index />} />
+              <Route path="/auth" element={<AuthPage />} />
+              <Route path="/auth/callback" element={<AuthCallback />} />
 
-            <Route
-              path="/dashboard"
-              element={
-                <ProtectedRoute>
-                  <DashboardLayout />
-                </ProtectedRoute>
-              }
-            >
-              <Route index element={<DashboardHome />} />
-              <Route path="tables" element={<TablesPage />} />
-              <Route path="analytics" element={<AnalyticsPage />} />
-              <Route path="invoices" element={<InvoicesPage />} />
-              <Route path="pricing" element={<PricingPage />} />
-              <Route path="notifications" element={<NotificationsPage />} />
-              <Route path="wallet" element={<WalletPage />} />
-              <Route path="settings" element={<SettingsPage />} />
-              <Route path="verification" element={<VerificationPage />} />
-            </Route>
+              <Route
+                path="/dashboard"
+                element={
+                  <ProtectedRoute>
+                    <DashboardLayout />
+                  </ProtectedRoute>
+                }
+              >
+                <Route index element={<DashboardHome />} />
+                <Route path="tables" element={<TablesPage />} />
+                <Route path="analytics" element={<AnalyticsPage />} />
+                <Route path="invoices" element={<InvoicesPage />} />
+                <Route path="pricing" element={<PricingPage />} />
+                <Route path="notifications" element={<NotificationsPage />} />
+                <Route path="wallet" element={<WalletPage />} />
+                <Route path="settings" element={<SettingsPage />} />
+                <Route path="verification" element={<VerificationPage />} />
+              </Route>
 
-            <Route path="*" element={<NotFound />} />
-          </Routes>
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </PinLock>
         </AuthProvider>
       </BrowserRouter>
     </TooltipProvider>
