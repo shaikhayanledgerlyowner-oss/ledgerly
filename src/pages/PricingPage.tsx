@@ -180,7 +180,6 @@ export default function PricingPage() {
           </Card>
         ))}
       </div>
-      )}
     </div>
   );
 }
