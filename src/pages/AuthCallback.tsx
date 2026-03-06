@@ -14,7 +14,7 @@ export default function AuthCallback() {
           if (event === "SIGNED_IN" && session) {
             navigate("/dashboard", { replace: true });
           } else if (event === "SIGNED_OUT") {
-            navigate("/", { replace: true }); // ✅ /auth nahi, / pe jaao
+            navigate("/", { replace: true });
           }
         });
       }
@@ -23,9 +23,7 @@ export default function AuthCallback() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background">
-      <p className="text-muted-foreground animate-pulse">
-        Completing sign in...
-      </p>
+      <p className="text-muted-foreground animate-pulse">Completing sign in...</p>
     </div>
   );
 }
