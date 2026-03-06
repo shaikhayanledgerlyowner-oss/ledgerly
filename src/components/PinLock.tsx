@@ -1,12 +1,11 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Lock, Delete, LogOut } from "lucide-react";
 
-// PIN is stored as hashed in Supabase profile
-// Session unlock stored in sessionStorage (clears when tab closes)
+// Unlocked flag — lives in sessionStorage (clears when ALL tabs close)
 const SESSION_KEY = "ledgerly_pin_unlocked";
 
 interface PinLockProps {
@@ -14,18 +13,26 @@ interface PinLockProps {
 }
 
 export default function PinLock({ children }: PinLockProps) {
-  const { user, profile, signOut } = useAuth();
+  const { user, profile, signOut, loading } = useAuth();
+
   const [pinEnabled, setPinEnabled] = useState(false);
   const [unlocked, setUnlocked] = useState(false);
   const [input, setInput] = useState("");
   const [shake, setShake] = useState(false);
-  const [checkingPin, setCheckingPin] = useState(true);
+  const [checking, setChecking] = useState(true);
 
-  // Check if PIN is set for this user
   useEffect(() => {
-    if (!profile?.id) return;
+    // Wait for auth to load
+    if (loading) return;
 
-    const checkPin = async () => {
+    // No user logged in → show children (AuthPage will handle redirect)
+    if (!user || !profile?.id) {
+      setChecking(false);
+      setUnlocked(true);
+      return;
+    }
+
+    const check = async () => {
       const { data } = await supabase
         .from("profiles")
         .select("pin_hash")
@@ -35,14 +42,19 @@ export default function PinLock({ children }: PinLockProps) {
       const hasPinSet = !!(data as any)?.pin_hash;
       setPinEnabled(hasPinSet);
 
-      // Check if already unlocked this session
-      const sessionUnlocked = sessionStorage.getItem(SESSION_KEY) === profile.id;
-      setUnlocked(!hasPinSet || sessionUnlocked);
-      setCheckingPin(false);
+      if (!hasPinSet) {
+        // No PIN set — let through
+        setUnlocked(true);
+      } else {
+        // PIN set — check if already unlocked this session
+        const sessionOk = sessionStorage.getItem(SESSION_KEY) === profile.id;
+        setUnlocked(sessionOk);
+      }
+      setChecking(false);
     };
 
-    checkPin();
-  }, [profile?.id]);
+    check();
+  }, [user, profile?.id, loading]);
 
   const handleDigit = (d: string) => {
     if (input.length >= 4) return;
@@ -62,7 +74,6 @@ export default function PinLock({ children }: PinLockProps) {
       .eq("id", profile.id)
       .single();
 
-    // Simple hash check — PIN stored as plain hash
     const storedHash = (data as any)?.pin_hash;
     const inputHash = await hashPin(pin);
 
@@ -73,19 +84,21 @@ export default function PinLock({ children }: PinLockProps) {
       setShake(true);
       setInput("");
       setTimeout(() => setShake(false), 600);
-      toast.error("Galat PIN! Dobara try karo.");
+      toast.error("Galat PIN!");
     }
   };
 
-  if (checkingPin) return null;
+  // Still loading auth or checking PIN
+  if (loading || checking) return null;
+
+  // PIN not enabled or already unlocked
   if (!pinEnabled || unlocked) return <>{children}</>;
 
-  const digits = [1, 2, 3, 4, 5, 6, 7, 8, 9, null, 0, "del"];
+  const digits = [1, 2, 3, 4, 5, 6, 7, 8, 9, null, 0, "del"] as const;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
       <div className="flex flex-col items-center gap-8 w-full max-w-xs px-6">
-        {/* Icon */}
         <div className="flex flex-col items-center gap-3">
           <div className="h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center">
             <Lock className="h-8 w-8 text-primary" />
@@ -135,7 +148,6 @@ export default function PinLock({ children }: PinLockProps) {
           })}
         </div>
 
-        {/* Sign out */}
         <Button
           variant="ghost"
           size="sm"
@@ -150,15 +162,15 @@ export default function PinLock({ children }: PinLockProps) {
   );
 }
 
-// Simple SHA-256 hash
+// SHA-256 hash with salt
 export async function hashPin(pin: string): Promise<string> {
-  const msgBuffer = new TextEncoder().encode(pin + "ledgerly_salt");
+  const msgBuffer = new TextEncoder().encode(pin + "ledgerly_salt_2024");
   const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
-// Helper to clear PIN session (call on sign out)
 export function clearPinSession() {
   sessionStorage.removeItem(SESSION_KEY);
 }
