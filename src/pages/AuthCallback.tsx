@@ -10,12 +10,11 @@ export default function AuthCallback() {
       if (session) {
         navigate("/dashboard", { replace: true });
       } else {
-        // Hash fragment handle karo
         supabase.auth.onAuthStateChange((event, session) => {
           if (event === "SIGNED_IN" && session) {
             navigate("/dashboard", { replace: true });
           } else if (event === "SIGNED_OUT") {
-            navigate("/auth", { replace: true });
+            navigate("/", { replace: true }); // ✅ /auth nahi, / pe jaao
           }
         });
       }
