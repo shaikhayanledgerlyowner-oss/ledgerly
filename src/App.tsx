@@ -2,14 +2,13 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import DashboardLayout from "@/components/DashboardLayout";
 import PinLock from "@/components/PinLock";
 
 import Index from "./pages/Index";
-import AuthPage from "./pages/AuthPage";
 import AuthCallback from "./pages/AuthCallback";
 import DashboardHome from "./pages/DashboardHome";
 import TablesPage from "./pages/TablesPage";
@@ -34,8 +33,9 @@ const App = () => (
           <PinLock>
             <Routes>
               <Route path="/" element={<Index />} />
-              <Route path="/auth" element={<AuthPage />} />
               <Route path="/auth/callback" element={<AuthCallback />} />
+              {/* Old auth page redirect */}
+              <Route path="/auth" element={<Navigate to="/" replace />} />
 
               <Route
                 path="/dashboard"
