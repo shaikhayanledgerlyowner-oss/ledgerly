@@ -23,8 +23,6 @@ const navItems = [
 ];
 
 const ownerItems = [
-  { to: "/dashboard/notifications", icon: Bell, label: "Notifications" },
-  { to: "/dashboard/verification", icon: Shield, label: "Verification Queue" },
   { to: "/dashboard/wallet", icon: Wallet, label: "Wallet" },
 ];
 
