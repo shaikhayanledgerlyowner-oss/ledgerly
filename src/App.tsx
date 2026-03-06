@@ -15,10 +15,8 @@ import TablesPage from "./pages/TablesPage";
 import InvoicesPage from "./pages/InvoicesPage";
 import PricingPage from "./pages/PricingPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
-import NotificationsPage from "./pages/NotificationsPage";
 import WalletPage from "./pages/Walletpage";
 import SettingsPage from "./pages/SettingsPage";
-import VerificationPage from "./pages/VerificationPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -44,10 +42,8 @@ const App = () => (
               <Route path="analytics" element={<AnalyticsPage />} />
               <Route path="invoices" element={<InvoicesPage />} />
               <Route path="pricing" element={<PricingPage />} />
-              <Route path="notifications" element={<NotificationsPage />} />
               <Route path="wallet" element={<WalletPage />} />
               <Route path="settings" element={<SettingsPage />} />
-              <Route path="verification" element={<VerificationPage />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>
