@@ -23,7 +23,7 @@ export default function LandingPage() {
           </div>
           <span className="text-xl font-display font-bold">Ledgerly</span>
         </div>
-        <Button onClick={() => navigate("/auth")} variant="outline">Sign In</Button>
+        <Button onClick={() => navigate("/dashboard")} variant="outline">Sign In</Button>
       </header>
 
       {/* Hero */}
@@ -44,7 +44,7 @@ export default function LandingPage() {
             Smart ledger, invoicing, quotations, bills, and PDF tools — all in one beautifully simple app built for small businesses.
           </p>
           <div className="mt-8 flex justify-center gap-4">
-            <Button size="lg" className="gap-2" onClick={() => navigate("/auth")}>
+            <Button size="lg" className="gap-2" onClick={() => navigate("/dashboard")}>
               Get Started Free <ArrowRight className="h-4 w-4" />
             </Button>
           </div>
