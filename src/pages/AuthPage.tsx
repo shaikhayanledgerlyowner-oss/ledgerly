@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { BookOpen, Chrome } from "lucide-react";
 
@@ -18,6 +18,13 @@ export default function AuthPage() {
   const [loading, setLoading] = useState(false);
   const [verifyEmail, setVerifyEmail] = useState(false);
 
+  // If already logged in, go straight to dashboard
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) navigate("/dashboard", { replace: true });
+    });
+  }, []);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -26,11 +33,8 @@ export default function AuthPage() {
       password: loginPassword,
     });
     setLoading(false);
-    if (error) {
-      toast.error(error.message);
-    } else {
-      navigate("/dashboard");
-    }
+    if (error) toast.error(error.message);
+    else navigate("/dashboard", { replace: true });
   };
 
   const handleSignup = async (e: React.FormEvent) => {
@@ -42,9 +46,8 @@ export default function AuthPage() {
       options: { emailRedirectTo: window.location.origin + "/auth/callback" },
     });
     setLoading(false);
-    if (error) {
-      toast.error(error.message);
-    } else {
+    if (error) toast.error(error.message);
+    else {
       setVerifyEmail(true);
       toast.success("Check your email to verify your account!");
     }
@@ -53,9 +56,7 @@ export default function AuthPage() {
   const handleGoogleLogin = async () => {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
-      options: {
-        redirectTo: window.location.origin + "/auth/callback",
-      },
+      options: { redirectTo: window.location.origin + "/auth/callback" },
     });
     if (error) toast.error(error.message);
   };
@@ -70,7 +71,7 @@ export default function AuthPage() {
             </div>
             <CardTitle className="text-2xl font-display">Verify Your Email</CardTitle>
             <CardDescription>
-              We've sent a verification link to <strong>{signupEmail}</strong>. Please check your inbox and click the link to activate your account.
+              We sent a verification link to <strong>{signupEmail}</strong>. Please check your inbox and click the link to activate your account.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -94,11 +95,7 @@ export default function AuthPage() {
           <CardDescription>Smart ledger, invoicing & billing tools</CardDescription>
         </CardHeader>
         <CardContent>
-          <Button
-            variant="outline"
-            className="mb-6 w-full gap-2"
-            onClick={handleGoogleLogin}
-          >
+          <Button variant="outline" className="mb-6 w-full gap-2" onClick={handleGoogleLogin}>
             <Chrome className="h-4 w-4" />
             Continue with Google
           </Button>
