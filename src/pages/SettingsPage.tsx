@@ -14,7 +14,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -41,20 +40,6 @@ type BrandingState = {
   signature_url: string | null;
 };
 
-function to12HourLabel(hhmm: string) {
-  const [hStr, mStr] = (hhmm || "09:00").split(":");
-  let h = Number(hStr);
-  const m = Number(mStr);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return hhmm;
-
-  const ampm = h >= 12 ? "PM" : "AM";
-  h = h % 12;
-  if (h === 0) h = 12;
-
-  const mm = String(m).padStart(2, "0");
-  return `${h}:${mm} ${ampm}`;
-}
-
 export default function SettingsPage() {
   const { profile, isPremium, refreshProfile, refreshCurrency } = useAuth();
 
@@ -72,13 +57,6 @@ export default function SettingsPage() {
     currency_code: "INR",
     logo_url: null,
     signature_url: null,
-  });
-
-  const [reminder, setReminder] = useState({
-    time: "09:00",
-    enabled: true,
-    message: "Your daily entry is pending.",
-    email: "",
   });
 
   const [purchaseStatus, setPurchaseStatus] = useState<string | null>(null);
@@ -103,53 +81,12 @@ export default function SettingsPage() {
     return base.slice(0, 2).toUpperCase();
   }, [displayName, profile?.email]);
 
-  const explainStorageError = (msg: string, bucketName: string) => {
-    const lower = (msg || "").toLowerCase();
-    if (lower.includes("bucket") && (lower.includes("not found") || lower.includes("does not exist"))) {
-      toast.error(`Storage bucket "${bucketName}" nahi mila. Supabase → Storage me "${bucketName}" bucket create karo (Public ON).`);
-      return true;
-    }
-    return false;
-  };
-
   const uploadFile = async (bucket: string, file: File, folder: string) => {
-    const savePin = async () => {
-    if (pinInput.length !== 4 || !/^\d{4}$/.test(pinInput)) {
-      toast.error("PIN 4 digits ka hona chahiye"); return;
-    }
-    if (pinStep === "set") {
-      setPinStep("confirm"); setPinConfirm(""); return;
-    }
-    if (pinStep === "confirm") {
-      if (pinInput !== pinConfirm) {
-        toast.error("PIN match nahi hua! Dobara try karo.");
-        setPinStep("set"); setPinInput(""); setPinConfirm(""); return;
-      }
-      setPinLoading(true);
-      const hash = await hashPin(pinInput);
-      const { error } = await supabase.from("profiles").update({ pin_hash: hash } as any).eq("id", profile!.id);
-      if (error) toast.error(error.message);
-      else { toast.success("PIN set ho gaya! ✅"); setHasPinSet(true); setPinStep("idle"); setPinInput(""); setPinConfirm(""); }
-      setPinLoading(false);
-    }
-  };
-
-  const removePin = async () => {
-    setPinLoading(true);
-    const { error } = await supabase.from("profiles").update({ pin_hash: null } as any).eq("id", profile!.id);
-    if (error) toast.error(error.message);
-    else { toast.success("PIN hata diya gaya"); setHasPinSet(false); setPinStep("idle"); clearPinSession(); }
-    setPinLoading(false);
-  };
-
-  if (!profile) return null;
+    if (!profile) return null;
     const ext = file.name.split(".").pop() || "png";
     const path = `${profile.id}/${folder}_${Date.now()}.${ext}`;
     const { error } = await supabase.storage.from(bucket).upload(path, file, { upsert: true });
-    if (error) {
-      if (!explainStorageError(error.message, bucket)) toast.error(error.message);
-      return null;
-    }
+    if (error) { toast.error(error.message); return null; }
     const { data: urlData } = supabase.storage.from(bucket).getPublicUrl(path);
     return urlData.publicUrl || null;
   };
@@ -170,13 +107,11 @@ export default function SettingsPage() {
     if (!currentUrl) return;
     try {
       isLogo ? setRemovingLogo(true) : setRemovingSig(true);
-      const bucket = "branding";
-      const path = getStoragePathFromPublicUrl(currentUrl, bucket);
-      if (path) await supabase.storage.from(bucket).remove([path]);
+      const path = getStoragePathFromPublicUrl(currentUrl, "branding");
+      if (path) await supabase.storage.from("branding").remove([path]);
       const patch: any = { user_id: profile.id };
       patch[key] = null;
-      const { error } = await supabase.from("user_branding").upsert(patch, { onConflict: "user_id" });
-      if (error) { toast.error(error.message); return; }
+      await supabase.from("user_branding").upsert(patch, { onConflict: "user_id" });
       setBranding((b) => ({ ...b, [key]: null }));
       toast.success(isLogo ? "Logo removed!" : "Signature removed!");
     } finally {
@@ -184,36 +119,17 @@ export default function SettingsPage() {
     }
   };
 
-  // ✅ Browser Notifications
-  const requestBrowserPermission = async (): Promise<boolean> => {
-    if (!("Notification" in window)) {
-      toast.error("Aapka browser notifications support nahi karta");
-      return false;
-    }
-    if (Notification.permission === "granted") return true;
-    const permission = await Notification.requestPermission();
-    if (permission === "granted") {
-      toast.success("Notifications allow ho gayi!");
-      return true;
-    }
-    toast.error("Permission denied. Browser settings se allow karo.");
-    return false;
-  };
-
-  // ---------- Load ----------
   useEffect(() => {
     if (!profile) return;
     setDisplayName((profile as any).display_name || "");
     setAvatarUrl((profile as any).avatar_url || null);
 
-    // Check PIN
     supabase.from("profiles").select("pin_hash").eq("id", profile.id).single()
       .then(({ data }) => setHasPinSet(!!(data as any)?.pin_hash));
 
     (async () => {
-      const { data: b, error: bErr } = await supabase.from("user_branding").select("*").eq("user_id", profile.id).maybeSingle();
-      if (bErr) toast.error(bErr.message);
-      else if (b) {
+      const { data: b } = await supabase.from("user_branding").select("*").eq("user_id", profile.id).maybeSingle();
+      if (b) {
         setBranding({
           business_name: b.business_name || "",
           address: b.address || "",
@@ -226,20 +142,6 @@ export default function SettingsPage() {
           signature_url: (b as any).signature_url || null,
         });
       }
-
-      const { data: r } = await supabase.from("reminders").select("*").eq("user_id", profile.id).maybeSingle();
-      if (r) {
-        setReminder({
-          time: (r as any).reminder_time || "09:00",
-          enabled: (r as any).enabled ?? true,
-          message: (r as any).message || "Your daily entry is pending.",
-          email: (r as any).email || profile?.email || "",
-        });
-      } else {
-        // Default: profile email pre-fill karo
-        setReminder(prev => ({ ...prev, email: profile?.email || "" }));
-      }
-
       const { data: p } = await supabase.from("purchase_requests").select("status").eq("user_id", profile.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
       setPurchaseStatus((p as any)?.status || null);
     })();
@@ -278,37 +180,23 @@ export default function SettingsPage() {
     if (!file || !profile) return;
     e.target.value = "";
 
-    // ✅ Validate image dimensions — must be between 300x100 and 800x300
     const validationError = await new Promise<string | null>((resolve) => {
       const img = new Image();
-      const url = URL.createObjectURL(file);
+      const objectUrl = URL.createObjectURL(file);
       img.onload = () => {
-        URL.revokeObjectURL(url);
+        URL.revokeObjectURL(objectUrl);
         const { width, height } = img;
-        if (width < 200 || height < 50) {
-          resolve(`Image too small (${width}×${height}px). Minimum: 200×50px`);
-        } else if (width > 1200 || height > 400) {
-          resolve(`Image too large (${width}×${height}px). Maximum: 1200×400px`);
-        } else if (width < height * 2) {
-          resolve(`Signature must be wider than tall (landscape). Got ${width}×${height}px`);
-        } else {
-          resolve(null);
-        }
+        if (width < 200 || height < 50) resolve(`Too small (${width}×${height}px). Min: 200×50px`);
+        else if (width > 1200 || height > 400) resolve(`Too large (${width}×${height}px). Max: 1200×400px`);
+        else if (width < height * 2) resolve(`Landscape honi chahiye. Got ${width}×${height}px`);
+        else resolve(null);
       };
-      img.onerror = () => { URL.revokeObjectURL(url); resolve("Invalid image file"); };
-      img.src = url;
+      img.onerror = () => { URL.revokeObjectURL(objectUrl); resolve("Invalid image"); };
+      img.src = objectUrl;
     });
 
-    if (validationError) {
-      toast.error(validationError);
-      return;
-    }
-
-    // ✅ File size max 500KB
-    if (file.size > 500 * 1024) {
-      toast.error("File too large. Maximum 500KB allowed.");
-      return;
-    }
+    if (validationError) { toast.error(validationError); return; }
+    if (file.size > 500 * 1024) { toast.error("Max 500KB allowed."); return; }
 
     setUploadingSig(true);
     const url = await uploadFile("branding", file, "signature");
@@ -318,7 +206,6 @@ export default function SettingsPage() {
       else { setBranding((b) => ({ ...b, signature_url: url })); toast.success("Signature uploaded!"); }
     }
     setUploadingSig(false);
-    e.target.value = "";
   };
 
   const saveProfile = async () => {
@@ -330,7 +217,7 @@ export default function SettingsPage() {
 
   const saveBranding = async () => {
     if (!profile) return;
-    const payload = {
+    const { error } = await supabase.from("user_branding").upsert({
       user_id: profile.id,
       business_name: branding.business_name,
       address: branding.address,
@@ -342,50 +229,45 @@ export default function SettingsPage() {
       logo_url: branding.logo_url,
       signature_url: branding.signature_url,
       updated_at: new Date().toISOString(),
-    };
-    const { error } = await supabase.from("user_branding").upsert(payload as any, { onConflict: "user_id" });
+    } as any, { onConflict: "user_id" });
     if (error) toast.error(error.message);
     else { await refreshCurrency(); toast.success("Branding saved!"); }
   };
 
-  const saveReminder = async () => {
-    if (!profile) return;
-
-    if (!reminder.email) {
-      toast.error("Email address zaroori hai reminder ke liye");
-      return;
-    }
-
-    const reminderData = {
-      reminder_time: reminder.time,
-      enabled: reminder.enabled,
-      message: reminder.message,
-      email: reminder.email,
-    };
-
-    const { data: existing } = await supabase.from("reminders").select("id").eq("user_id", profile.id).maybeSingle();
-
-    if ((existing as any)?.id) {
-      const { error } = await supabase.from("reminders").update(reminderData as any).eq("user_id", profile.id);
-      if (error) { toast.error(error.message); return; }
-    } else {
-      const { error } = await supabase.from("reminders").insert({ user_id: profile.id, ...reminderData } as any);
-      if (error) { toast.error(error.message); return; }
-    }
-
-    toast.success(`✅ Reminder save ho gaya! Email jaayegi ${reminder.email} pe ${to12HourLabel(reminder.time)} baje.`);
-  };
-
   const handleCountryChange = (code: string) => {
     const country = countries.find((c) => c.code === code);
-    setBranding((prev) => ({
-      ...prev,
-      country_code: code,
-      currency_code: country?.currency || prev.currency_code,
-    }));
+    setBranding((prev) => ({ ...prev, country_code: code, currency_code: country?.currency || prev.currency_code }));
   };
 
-  const reminderTimeLabel = useMemo(() => to12HourLabel(reminder.time), [reminder.time]);
+  const savePin = async () => {
+    if (pinStep === "set") {
+      if (pinInput.length !== 4) { toast.error("PIN 4 digits ka hona chahiye"); return; }
+      setPinStep("confirm"); setPinConfirm(""); return;
+    }
+    if (pinStep === "confirm") {
+      if (pinConfirm.length !== 4) { toast.error("PIN 4 digits ka hona chahiye"); return; }
+      if (pinInput !== pinConfirm) {
+        toast.error("PIN match nahi hua! Dobara try karo.");
+        setPinStep("set"); setPinInput(""); setPinConfirm(""); return;
+      }
+      setPinLoading(true);
+      const hash = await hashPin(pinInput);
+      const { error } = await supabase.from("profiles").update({ pin_hash: hash } as any).eq("id", profile!.id);
+      if (error) toast.error(error.message);
+      else { toast.success("PIN set ho gaya! ✅"); setHasPinSet(true); setPinStep("idle"); setPinInput(""); setPinConfirm(""); }
+      setPinLoading(false);
+    }
+  };
+
+  const removePin = async () => {
+    setPinLoading(true);
+    const { error } = await supabase.from("profiles").update({ pin_hash: null } as any).eq("id", profile!.id);
+    if (error) toast.error(error.message);
+    else { toast.success("PIN hata diya gaya"); setHasPinSet(false); setPinStep("idle"); clearPinSession(); }
+    setPinLoading(false);
+  };
+
+  if (!profile) return null;
 
   return (
     <div className="animate-fade-in space-y-6 max-w-2xl">
@@ -464,16 +346,11 @@ export default function SettingsPage() {
               </Select>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <Label>Currency</Label>
-              <Input value={branding.currency_code} onChange={(e) => setBranding({ ...branding, currency_code: e.target.value })} />
-            </div>
-            <div className="space-y-2">
-              <Label> </Label>
-              <p className="text-xs text-muted-foreground pt-3">Tip: India ke liye INR best.</p>
-            </div>
+          <div className="space-y-2">
+            <Label>Currency</Label>
+            <Input value={branding.currency_code} onChange={(e) => setBranding({ ...branding, currency_code: e.target.value })} />
           </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Business Logo</Label>
@@ -496,11 +373,6 @@ export default function SettingsPage() {
                   <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} disabled={uploadingLogo} />
                 </label>
               )}
-              <div className="text-xs text-muted-foreground space-y-0.5 mt-1">
-                <p>✅ Recommended size: <strong>400×100px</strong> to <strong>800×200px</strong></p>
-                <p>📐 Must be landscape (wider than tall)</p>
-                <p>📁 Max file size: <strong>500KB</strong> · PNG/JPG</p>
-              </div>
             </div>
             <div className="space-y-2">
               <Label>Signature</Label>
@@ -523,64 +395,19 @@ export default function SettingsPage() {
                   <input type="file" accept="image/*" className="hidden" onChange={handleSignatureUpload} disabled={uploadingSig} />
                 </label>
               )}
-              <div className="text-xs text-muted-foreground space-y-0.5 mt-1">
-                <p>✅ Recommended size: <strong>400×100px</strong> to <strong>800×200px</strong></p>
-                <p>📐 Must be landscape (wider than tall)</p>
-                <p>📁 Max file size: <strong>500KB</strong> · PNG/JPG</p>
-              </div>
+              <p className="text-xs text-muted-foreground mt-1">✅ 400×100 to 800×200px · Landscape · Max 500KB</p>
             </div>
           </div>
           <Button onClick={saveBranding}>Save Branding</Button>
         </CardContent>
       </Card>
 
-      {/* Reminders */}
-      <Card className="glass-card">
-        <CardHeader><CardTitle className="text-lg">📧 Email Reminders</CardTitle></CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <Label>Daily Reminder</Label>
-            <Switch checked={reminder.enabled} onCheckedChange={(v) => setReminder({ ...reminder, enabled: v })} />
-          </div>
-
-          <div className="space-y-2">
-            <Label>Reminder Email</Label>
-            <Input
-              type="email"
-              value={reminder.email}
-              onChange={(e) => setReminder({ ...reminder, email: e.target.value })}
-              placeholder="aapka@email.com"
-            />
-            <p className="text-xs text-muted-foreground">Is email pe daily reminder aayega</p>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label>Time</Label>
-              <span className="text-xs text-muted-foreground font-medium">{reminderTimeLabel}</span>
-            </div>
-            <Input
-              type="time"
-              value={reminder.time}
-              onChange={(e) => setReminder({ ...reminder, time: e.target.value })}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label>Message</Label>
-            <Input value={reminder.message} onChange={(e) => setReminder({ ...reminder, message: e.target.value })} placeholder="e.g. Aaj ki entries update karo" />
-          </div>
-
-          <Button onClick={saveReminder}>💾 Save Reminder</Button>
-        </CardContent>
-      </Card>
-
-      {/* PIN Lock Card */}
+      {/* PIN Lock */}
       <Card className="glass-card">
         <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Lock className="h-5 w-5" /> App PIN Lock</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Har baar app kholne pe Google login ki jagah sirf 4-digit PIN maanga jayega.
+            Har baar app kholne pe sirf 4-digit PIN maanga jayega — Google login ek hi baar.
           </p>
 
           {hasPinSet ? (
@@ -624,7 +451,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
-                  onClick={() => setShowPin(s => !s)}
+                  onClick={() => setShowPin((s) => !s)}
                 >
                   {showPin ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
