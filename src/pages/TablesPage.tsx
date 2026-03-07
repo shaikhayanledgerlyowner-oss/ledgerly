@@ -684,6 +684,8 @@ export default function TablesPage(){
                             onMouseDown={e=>{
                               if(e.button!==0||DR.current.active)return;
                               e.preventDefault();
+                              // select cell immediately so drag handle shows at once
+                              setSelCells(new Set([ck(r.id,col.name)]));
                               startEdit(r.id,col.name,true);
                             }}
                           >
@@ -731,8 +733,8 @@ export default function TablesPage(){
                               </div>
                             )}
 
-                            {/* ✅ DRAG HANDLE — visible on selected cell */}
-                            {isSel&&!isEd&&(
+                            {/* DRAG HANDLE — visible on any selected cell */}
+                            {isSel&&(
                               <div
                                 className="absolute bottom-0 right-0 w-3 h-3 bg-[#1a73e8] border-2 border-white z-30 cursor-crosshair"
                                 style={{transform:"translate(50%,50%)"}}
