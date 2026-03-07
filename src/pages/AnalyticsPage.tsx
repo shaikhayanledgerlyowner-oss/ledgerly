@@ -1,383 +1,187 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { BarChart3, IndianRupee, Download } from "lucide-react";
 import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
+  BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from "recharts";
+import { TrendingUp, IndianRupee, BarChart2, PieChart as PieIcon, Table2 } from "lucide-react";
 
-function formatINR(n: number) {
-  return `₹${Number(n || 0).toLocaleString("en-IN")}`;
-}
+interface DbTable  { id:string; name:string; }
+interface DbColumn { id:string; table_id:string; name:string; type:string; }
+interface DbRow    { id:string; table_id:string; row_data:Record<string,any>; }
 
-// ✅ PDF-safe version: Rs. instead of ₹ (jsPDF default font doesn't support ₹)
-function formatINRpdf(n: number) {
-  return `Rs. ${Number(n || 0).toLocaleString("en-IN")}`;
-}
+const COLORS=["#3b82f6","#22c55e","#f59e0b","#ef4444","#a855f7","#06b6d4","#f97316","#ec4899"];
+const toNum=(v:any)=>{if(v==null||v==="")return 0;const n=Number(String(v).replace(/,/g,""));return isFinite(n)?n:0;};
+const fmt=(n:number)=>`₹${n.toLocaleString("en-IN",{maximumFractionDigits:2})}`;
 
-function toNumberSafe(v: any): number {
-  if (!v) return 0;
-  const cleaned = String(v).replace(/[₹,\s]/g, "");
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : 0;
-}
+export default function AnalyticsPage(){
+  const {profile}=useAuth();
+  const uid=profile?.id;
 
-const COLORS = ["#16a34a", "#dc2626"]; // green revenue, red expense
+  const [tables,setTables]=useState<DbTable[]>([]);
+  const [columns,setColumns]=useState<DbColumn[]>([]);
+  const [rows,setRows]=useState<DbRow[]>([]);
+  const [loading,setLoading]=useState(true);
+  const [chartType,setChartType]=useState<"bar"|"line"|"pie">("bar");
 
-export default function AnalyticsPage() {
-  const { profile } = useAuth();
+  useEffect(()=>{
+    if(!uid)return;
+    (async()=>{
+      setLoading(true);
+      // load all tables
+      const {data:tbls}=await supabase.from("user_tables").select("id,name").eq("user_id",uid);
+      const tableList=(tbls??[]) as DbTable[];
+      setTables(tableList);
+      if(!tableList.length){setLoading(false);return;}
 
-  const [tables, setTables] = useState<any[]>([]);
-  const [columns, setColumns] = useState<any[]>([]);
-  const [rows, setRows] = useState<any[]>([]);
-  const [downloading, setDownloading] = useState(false);
+      const ids=tableList.map(t=>t.id);
 
-  const chartRef = useRef<HTMLDivElement>(null);
+      // load ALL columns — filter only amount type
+      const {data:cols}=await supabase.from("user_columns").select("*").in("table_id",ids);
+      const amountCols=((cols??[]) as DbColumn[]).filter(c=>c.type==="amount");
+      setColumns(amountCols);
 
-  useEffect(() => {
-    if (!profile) return;
+      if(!amountCols.length){setLoading(false);return;}
 
-    const load = async () => {
-      const { data: t } = await supabase
-        .from("user_tables")
-        .select("id,name")
-        .eq("user_id", profile.id);
+      // load rows only for tables that have amount columns
+      const relevantTableIds=[...new Set(amountCols.map(c=>c.table_id))];
+      const {data:rowData}=await supabase.from("user_rows").select("*").in("table_id",relevantTableIds);
+      setRows(((rowData??[]) as DbRow[]).map(r=>({...r,row_data:r.row_data??{}})));
+      setLoading(false);
+    })();
+  },[uid]);
 
-      setTables(t ?? []);
+  // Build analytics per table per amount column
+  const analytics=useMemo(()=>{
+    return tables.map(table=>{
+      const amtCols=columns.filter(c=>c.table_id===table.id);
+      if(!amtCols.length)return null;
+      const tableRows=rows.filter(r=>r.table_id===table.id);
+      if(!tableRows.length)return null;
 
-      if (!t || t.length === 0) return;
+      const colStats=amtCols.map(col=>{
+        const vals=tableRows.map(r=>toNum(r.row_data[col.name]));
+        const total=vals.reduce((a,b)=>a+b,0);
+        const avg=vals.length?total/vals.length:0;
+        const max=Math.max(...vals);
+        const min=Math.min(...vals.filter(v=>v!==0));
+        // chart data: each row as a data point
+        const chartData=tableRows.map((r,i)=>({
+          name:`Row ${i+1}`,
+          value:toNum(r.row_data[col.name]),
+        })).filter(d=>d.value!==0);
+        return {col,vals,total,avg,max,min:isFinite(min)?min:0,chartData};
+      });
 
-      const ids = t.map(x => x.id);
+      return {table,colStats};
+    }).filter(Boolean) as {table:DbTable;colStats:{col:DbColumn;vals:number[];total:number;avg:number;max:number;min:number;chartData:{name:string;value:number}[]}[]}[];
+  },[tables,columns,rows]);
 
-      const { data: c } = await supabase
-        .from("user_columns")
-        .select("id,name,type,table_id")
-        .in("table_id", ids);
-
-      setColumns(c ?? []);
-
-      const { data: r } = await supabase
-        .from("user_rows")
-        .select("table_id,row_data")
-        .in("table_id", ids);
-
-      setRows(r ?? []);
-    };
-
-    load();
-  }, [profile]);
-
-  // ✅ ONLY currency columns
-  const currencyCols = useMemo(
-    () => columns.filter(c => c.type === "currency"),
-    [columns]
+  if(loading)return(
+    <div className="flex items-center justify-center h-64">
+      <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full"/>
+    </div>
   );
 
-  // ✅ Revenue & Expense calculation
-  const moneySummary = useMemo(() => {
-    let revenue = 0;
-    let expense = 0;
+  if(!analytics.length)return(
+    <div className="flex flex-col items-center justify-center h-64 text-center gap-3">
+      <IndianRupee className="w-16 h-16 text-muted-foreground/20"/>
+      <h3 className="text-lg font-semibold">No Amount columns found</h3>
+      <p className="text-muted-foreground text-sm max-w-xs">Go to Tables, create a column and set its type to <strong>Amount (₹)</strong> — analytics will appear here automatically.</p>
+    </div>
+  );
 
-    rows.forEach(r => {
-      currencyCols
-        .filter(c => c.table_id === r.table_id)
-        .forEach(c => {
-          const name = String(c.name).toLowerCase();
-          const value = toNumberSafe(r.row_data?.[c.name]);
-
-          // ignore total/subtotal to avoid double counting
-          if (name.includes("total")) return;
-
-          if (name.includes("expense") || name.includes("cost")) {
-            expense += value;
-          } else {
-            revenue += value;
-          }
-        });
-    });
-
-    return {
-      revenue,
-      expense,
-      profit: revenue - expense,
-    };
-  }, [rows, currencyCols]);
-
-  // ✅ Bar chart data (currency columns only)
-  const barData = useMemo(() => {
-    return currencyCols.map(col => {
-      let total = 0;
-
-      rows
-        .filter(r => r.table_id === col.table_id)
-        .forEach(r => {
-          total += toNumberSafe(r.row_data?.[col.name]);
-        });
-
-      return {
-        name: col.name,
-        total,
-      };
-    });
-  }, [currencyCols, rows]);
-
-  // ✅ Pie chart Revenue vs Expense only
-  const pieData = [
-    { name: "Revenue", value: moneySummary.revenue },
-    { name: "Expense", value: moneySummary.expense },
-  ].filter(x => x.value > 0);
-
-  // ✅ PDF Download
-  const handleDownloadPDF = async () => {
-    setDownloading(true);
-    try {
-      const html2canvas = (await import("html2canvas")).default;
-      const jsPDF = (await import("jspdf")).default;
-
-      const chartElement = chartRef.current;
-      if (!chartElement) return;
-
-      const canvas = await html2canvas(chartElement, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: "#ffffff",
-      });
-
-      const imgData = canvas.toDataURL("image/png");
-
-      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-
-      // ── Header ──
-      pdf.setFillColor(37, 99, 235);
-      pdf.rect(0, 0, pageWidth, 18, "F");
-      pdf.setTextColor(255, 255, 255);
-      pdf.setFontSize(14);
-      pdf.setFont("helvetica", "bold");
-      pdf.text("Ledgerly - Analytics Report", 14, 12);
-      pdf.setFontSize(9);
-      pdf.setFont("helvetica", "normal");
-      pdf.text(`Generated: ${new Date().toLocaleDateString("en-IN")}`, pageWidth - 14, 12, { align: "right" });
-
-      // ── Charts image ──
-      const imgWidth = pageWidth - 28;
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
-      pdf.addImage(imgData, "PNG", 14, 24, imgWidth, imgHeight);
-
-      let yPos = 24 + imgHeight + 10;
-
-      // ── Divider ──
-      pdf.setDrawColor(200, 200, 200);
-      pdf.line(14, yPos, pageWidth - 14, yPos);
-      yPos += 8;
-
-      // ── Summary heading ──
-      pdf.setFontSize(13);
-      pdf.setFont("helvetica", "bold");
-      pdf.setTextColor(30, 30, 30);
-      pdf.text("Financial Summary", 14, yPos);
-      yPos += 8;
-
-      // ── Summary table ──
-      const summaryRows = [
-        ["Revenue", formatINRpdf(moneySummary.revenue), "#16a34a"],
-        ["Expense", formatINRpdf(moneySummary.expense), "#dc2626"],
-        ["Net Profit", formatINRpdf(moneySummary.profit), moneySummary.profit >= 0 ? "#16a34a" : "#dc2626"],
-      ];
-
-      summaryRows.forEach(([label, value, color]) => {
-        pdf.setFillColor(245, 245, 245);
-        pdf.roundedRect(14, yPos - 5, pageWidth - 28, 10, 2, 2, "F");
-        pdf.setFontSize(11);
-        pdf.setFont("helvetica", "normal");
-        pdf.setTextColor(60, 60, 60);
-        pdf.text(label, 20, yPos + 1);
-        const [r, g, b] = color
-          .replace("#", "")
-          .match(/.{2}/g)!
-          .map(x => parseInt(x, 16));
-        pdf.setTextColor(r, g, b);
-        pdf.setFont("helvetica", "bold");
-        pdf.text(value, pageWidth - 20, yPos + 1, { align: "right" });
-        yPos += 14;
-      });
-
-      yPos += 4;
-
-      // ── Per-column detail ──
-      if (barData.length > 0) {
-        if (yPos > pageHeight - 60) {
-          pdf.addPage();
-          yPos = 20;
-        }
-
-        pdf.setDrawColor(200, 200, 200);
-        pdf.line(14, yPos, pageWidth - 14, yPos);
-        yPos += 8;
-
-        pdf.setFontSize(13);
-        pdf.setFont("helvetica", "bold");
-        pdf.setTextColor(30, 30, 30);
-        pdf.text("Column-wise Breakdown", 14, yPos);
-        yPos += 8;
-
-        // Table header
-        pdf.setFillColor(37, 99, 235);
-        pdf.rect(14, yPos - 5, pageWidth - 28, 10, "F");
-        pdf.setTextColor(255, 255, 255);
-        pdf.setFontSize(10);
-        pdf.setFont("helvetica", "bold");
-        pdf.text("Column Name", 20, yPos + 1);
-        pdf.text("Total Amount", pageWidth - 20, yPos + 1, { align: "right" });
-        yPos += 13;
-
-        barData.forEach((item, idx) => {
-          if (yPos > pageHeight - 20) {
-            pdf.addPage();
-            yPos = 20;
-          }
-          if (idx % 2 === 0) {
-            pdf.setFillColor(245, 247, 255);
-            pdf.rect(14, yPos - 5, pageWidth - 28, 10, "F");
-          }
-          pdf.setFontSize(10);
-          pdf.setFont("helvetica", "normal");
-          pdf.setTextColor(50, 50, 50);
-          pdf.text(item.name, 20, yPos + 1);
-          pdf.setFont("helvetica", "bold");
-          pdf.setTextColor(37, 99, 235);
-          pdf.text(formatINRpdf(item.total), pageWidth - 20, yPos + 1, { align: "right" });
-          yPos += 12;
-        });
-      }
-
-      // ── Footer ──
-      pdf.setFontSize(8);
-      pdf.setTextColor(150, 150, 150);
-      pdf.setFont("helvetica", "normal");
-      pdf.text("Ledgerly - Smart Business Management", pageWidth / 2, pageHeight - 8, { align: "center" });
-
-      pdf.save("ledgerly-analytics.pdf");
-    } catch (err) {
-      console.error("PDF error:", err);
-    } finally {
-      setDownloading(false);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-
+  return(
+    <div className="space-y-8 pb-8">
+      {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <BarChart3 className="h-6 w-6" />
-          Analytics
-        </h1>
-        <Button onClick={handleDownloadPDF} disabled={downloading} className="gap-2">
-          <Download className="h-4 w-4" />
-          {downloading ? "Generating..." : "Download PDF"}
-        </Button>
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2"><TrendingUp className="w-6 h-6 text-primary"/>Analytics</h1>
+          <p className="text-muted-foreground text-sm mt-0.5">Amount columns from all your sheets</p>
+        </div>
+        {/* Chart type switcher */}
+        <div className="flex items-center gap-1 bg-muted rounded-lg p-1">
+          {([["bar","Bar",BarChart2],["line","Line",TrendingUp],["pie","Pie",PieIcon]] as const).map(([k,label,Icon])=>(
+            <button key={k} onClick={()=>setChartType(k)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${chartType===k?"bg-background shadow text-foreground":"text-muted-foreground hover:text-foreground"}`}>
+              <Icon className="w-3.5 h-3.5"/>{label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div ref={chartRef}>
+      {analytics.map(({table,colStats})=>(
+        <div key={table.id} className="space-y-6">
+          {/* Table name header */}
+          <div className="flex items-center gap-2 pb-1 border-b">
+            <Table2 className="w-4 h-4 text-muted-foreground"/>
+            <h2 className="font-semibold text-base">{table.name}</h2>
+          </div>
 
-        {/* ✅ GRAND TOTAL = REVENUE ONLY */}
-        <Card>
-          <CardContent className="flex items-center gap-4 pt-6">
-            <div className="bg-primary/10 p-3 rounded-xl">
-              <IndianRupee className="h-6 w-6 text-primary" />
+          {colStats.map(({col,total,avg,max,min,chartData},ci)=>(
+            <div key={col.id} className="space-y-4">
+              {/* Column label */}
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full" style={{background:COLORS[ci%COLORS.length]}}/>
+                <span className="font-medium text-sm">{col.name}</span>
+              </div>
+
+              {/* Stat cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  {label:"Total",value:fmt(total),icon:"Σ"},
+                  {label:"Average",value:fmt(avg),icon:"∅"},
+                  {label:"Highest",value:fmt(max),icon:"↑"},
+                  {label:"Lowest",value:fmt(min),icon:"↓"},
+                ].map(s=>(
+                  <div key={s.label} className="bg-card border rounded-xl p-4">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-muted-foreground">{s.label}</span>
+                      <span className="text-lg text-muted-foreground/40 font-bold leading-none">{s.icon}</span>
+                    </div>
+                    <p className="text-lg font-bold text-primary truncate">{s.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Chart */}
+              {chartData.length>0&&(
+                <div className="bg-card border rounded-xl p-4">
+                  <h3 className="text-sm font-medium mb-4 text-muted-foreground">{col.name} — per row</h3>
+                  <ResponsiveContainer width="100%" height={220}>
+                    {chartType==="bar"?(
+                      <BarChart data={chartData} margin={{top:4,right:16,bottom:4,left:16}}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
+                        <XAxis dataKey="name" tick={{fontSize:11}} tickLine={false}/>
+                        <YAxis tick={{fontSize:11}} tickLine={false} axisLine={false} tickFormatter={v=>`₹${Number(v).toLocaleString("en-IN")}`}/>
+                        <Tooltip formatter={(v:any)=>fmt(Number(v))} contentStyle={{fontSize:12,borderRadius:8}}/>
+                        <Bar dataKey="value" fill={COLORS[ci%COLORS.length]} radius={[4,4,0,0]} name={col.name}/>
+                      </BarChart>
+                    ):chartType==="line"?(
+                      <LineChart data={chartData} margin={{top:4,right:16,bottom:4,left:16}}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
+                        <XAxis dataKey="name" tick={{fontSize:11}} tickLine={false}/>
+                        <YAxis tick={{fontSize:11}} tickLine={false} axisLine={false} tickFormatter={v=>`₹${Number(v).toLocaleString("en-IN")}`}/>
+                        <Tooltip formatter={(v:any)=>fmt(Number(v))} contentStyle={{fontSize:12,borderRadius:8}}/>
+                        <Line type="monotone" dataKey="value" stroke={COLORS[ci%COLORS.length]} strokeWidth={2} dot={{r:3}} name={col.name}/>
+                      </LineChart>
+                    ):(
+                      <PieChart>
+                        <Pie data={chartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} label={({name,value})=>`${name}: ${fmt(value)}`} labelLine={false}>
+                          {chartData.map((_,i)=><Cell key={i} fill={COLORS[i%COLORS.length]}/>)}
+                        </Pie>
+                        <Tooltip formatter={(v:any)=>fmt(Number(v))} contentStyle={{fontSize:12,borderRadius:8}}/>
+                        <Legend/>
+                      </PieChart>
+                    )}
+                  </ResponsiveContainer>
+                </div>
+              )}
             </div>
-            <div>
-              <p className="text-xs text-muted-foreground">
-                Grand Total (Revenue Only)
-              </p>
-              <p className="text-2xl font-bold">
-                {formatINR(moneySummary.revenue)}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Revenue & Expense Bar */}
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle>Revenue & Expense</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart
-                data={[
-                  { name: "Revenue", value: moneySummary.revenue },
-                  { name: "Expense", value: moneySummary.expense },
-                ]}
-              >
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" />
-                <YAxis />
-                <Tooltip formatter={(v:any)=>formatINR(v)} />
-                <Bar dataKey="value" fill="#2563eb" />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Revenue vs Expense Pie */}
-        {pieData.length > 0 && (
-          <Card className="mt-6">
-            <CardHeader>
-              <CardTitle>Revenue vs Expense</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={300}>
-                <PieChart>
-                  <Pie
-                    data={pieData}
-                    dataKey="value"
-                    nameKey="name"
-                    outerRadius={110}
-                    label={({ name, value }) =>
-                      `${name}: ${formatINR(value)}`
-                    }
-                  >
-                    {pieData.map((_, i) => (
-                      <Cell key={i} fill={COLORS[i]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(v:any)=>formatINR(v)} />
-                </PieChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Summary */}
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle>Summary</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <p>Revenue: {formatINR(moneySummary.revenue)}</p>
-            <p>Expense: {formatINR(moneySummary.expense)}</p>
-            <p className="font-bold">
-              Profit: {formatINR(moneySummary.profit)}
-            </p>
-          </CardContent>
-        </Card>
-
-      </div>
-
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
