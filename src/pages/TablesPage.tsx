@@ -686,33 +686,123 @@ export default function TablesPage(){
                   </th>
                   {columns.map((col)=>{
                     const type=(col.type as ColType)??"text";
+                    // check if entire column is selected (for highlight)
                     const colSel=rowsRef.current.length>0&&rowsRef.current.every(r=>selCells.has(ck(r.id,col.name)));
+                    // get first cell style of this column for color preview
+                    const firstColStyle=rowsRef.current[0]?styleMap[ck(rowsRef.current[0].id,col.name)]:undefined;
                     return(
                       <th key={col.id}
-                        className={`border border-[#d0d0d0] h-8 text-xs font-medium select-none relative group cursor-pointer transition-colors ${colSel?"bg-[#cce0ff]":"bg-[#f2f2f2] dark:bg-muted hover:bg-[#e8e8e8]"}`}
+                        className={`border border-[#d0d0d0] h-8 text-xs font-medium select-none relative group transition-colors ${colSel?"bg-[#cce0ff]":"bg-[#f2f2f2] dark:bg-muted"}`}
                         onContextMenu={e=>openCtx(e,undefined,col.id,col.name)}
-                        onClick={e=>{if(renamingColId!==col.id){selectCol(col.name);setEditCell(null);}}}
-                        onDoubleClick={e=>{e.stopPropagation();setRenamingColId(col.id);setRenamingColVal(col.name);setRenamingColType(type);}}
                       >
                         {renamingColId===col.id?(
-                          <div className="flex items-center gap-1 px-1" onClick={e=>e.stopPropagation()}>
-                            <Input className="h-6 text-xs flex-1 min-w-0" value={renamingColVal} autoFocus onChange={e=>setRenamingColVal(e.target.value)} onBlur={()=>updateColumn(col,renamingColVal,renamingColType)} onKeyDown={e=>{if(e.key==="Enter")updateColumn(col,renamingColVal,renamingColType);if(e.key==="Escape")setRenamingColId(null);}}/>
+                          // ── EDIT MODE ──
+                          <div className="flex items-center gap-1 px-1 h-full" onClick={e=>e.stopPropagation()}>
+                            <Input
+                              className="h-6 text-xs flex-1 min-w-0"
+                              value={renamingColVal}
+                              autoFocus
+                              onChange={e=>setRenamingColVal(e.target.value)}
+                              onBlur={()=>updateColumn(col,renamingColVal,renamingColType)}
+                              onKeyDown={e=>{
+                                if(e.key==="Enter")updateColumn(col,renamingColVal,renamingColType);
+                                if(e.key==="Escape")setRenamingColId(null);
+                              }}
+                            />
                             <Select value={renamingColType} onValueChange={v=>setRenamingColType(v as ColType)}>
-                              <SelectTrigger className="h-6 w-8 p-0 border-0 bg-transparent [&>svg]:hidden shrink-0"><span className="flex items-center justify-center">{TYPE_ICO[renamingColType]}</span></SelectTrigger>
+                              <SelectTrigger className="h-6 w-8 p-0 border-0 bg-transparent [&>svg]:hidden shrink-0">
+                                <span className="flex items-center justify-center">{TYPE_ICO[renamingColType]}</span>
+                              </SelectTrigger>
                               <SelectContent>
-                                {["text","number","currency","amount","date"].map(t=><SelectItem key={t} value={t}><span className="flex gap-2 items-center">{TYPE_ICO[t]}{t==="amount"?"Amount (₹)":t.charAt(0).toUpperCase()+t.slice(1)}</span></SelectItem>)}
+                                {["text","number","currency","amount","date"].map(t=>(
+                                  <SelectItem key={t} value={t}>
+                                    <span className="flex gap-2 items-center">{TYPE_ICO[t]}{t==="amount"?"Amount (₹)":t.charAt(0).toUpperCase()+t.slice(1)}</span>
+                                  </SelectItem>
+                                ))}
                               </SelectContent>
                             </Select>
                           </div>
                         ):(
-                          <div className="flex items-center justify-between px-2 h-full pointer-events-none">
-                            <div className="flex items-center gap-1.5 overflow-hidden">
+                          // ── DISPLAY MODE ──
+                          <div className="flex items-center justify-between px-1.5 h-full">
+                            {/* Left: icon + name — click to edit */}
+                            <div
+                              className="flex items-center gap-1 overflow-hidden flex-1 cursor-pointer hover:bg-white/50 rounded px-1 h-6"
+                              onClick={e=>{
+                                e.stopPropagation();
+                                setRenamingColId(col.id);
+                                setRenamingColVal(col.name);
+                                setRenamingColType(type);
+                              }}
+                              title="Click to rename / change type"
+                            >
                               <span className="text-muted-foreground/40 shrink-0">{TYPE_ICO[type]}</span>
-                              <span className="truncate">{col.name}</span>
+                              <span className="truncate text-xs">{col.name}</span>
                             </div>
-                            <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 pointer-events-auto" onClick={e=>e.stopPropagation()}>
-                              <button className="p-0.5 rounded hover:bg-white/60" onClick={e=>{e.stopPropagation();setSortCol(col.name);setSortDir(sortCol===col.name&&sortDir==="asc"?"desc":"asc");}}>
-                                {sortCol===col.name?(sortDir==="asc"?<SortAsc className="w-3 h-3"/>:<SortDesc className="w-3 h-3"/>):<ChevronDown className="w-3 h-3 opacity-40"/>}
+
+                            {/* Right: color + sort — always visible on hover */}
+                            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 shrink-0">
+                              {/* Column color button */}
+                              <Popover>
+                                <PopoverTrigger asChild>
+                                  <button
+                                    className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/70"
+                                    title="Color this column"
+                                    onClick={e=>e.stopPropagation()}
+                                  >
+                                    <div className="w-3 h-3 rounded-sm border border-gray-400" style={{background:firstColStyle?.bg??"transparent"}}/>
+                                  </button>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-auto p-2 z-50" align="start" onClick={e=>e.stopPropagation()}>
+                                  <p className="text-xs font-semibold mb-2 text-gray-600">Column color</p>
+                                  <div className="grid grid-cols-5 gap-1 mb-1">
+                                    {BG_COLORS.map(c=>(
+                                      <button key={c}
+                                        className="w-6 h-6 rounded border-2 hover:scale-110 transition-all border-gray-200"
+                                        style={{background:c}}
+                                        onClick={e=>{
+                                          e.stopPropagation();
+                                          // apply bg to ALL cells in this column
+                                          setStyleMap(prev=>{
+                                            const next={...prev};
+                                            rowsRef.current.forEach(r=>{
+                                              const k=ck(r.id,col.name);
+                                              next[k]={...(next[k]??{}),bg:c};
+                                            });
+                                            saveStyles(next);
+                                            return next;
+                                          });
+                                        }}
+                                      />
+                                    ))}
+                                  </div>
+                                  <button
+                                    className="w-full text-xs py-1 rounded hover:bg-gray-100 text-gray-500 border border-dashed border-gray-300"
+                                    onClick={e=>{
+                                      e.stopPropagation();
+                                      setStyleMap(prev=>{
+                                        const next={...prev};
+                                        rowsRef.current.forEach(r=>{
+                                          const k=ck(r.id,col.name);
+                                          if(next[k])delete next[k].bg;
+                                        });
+                                        saveStyles(next);
+                                        return next;
+                                      });
+                                    }}
+                                  >Clear</button>
+                                </PopoverContent>
+                              </Popover>
+
+                              {/* Sort button */}
+                              <button
+                                className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/70"
+                                title="Sort"
+                                onClick={e=>{e.stopPropagation();setSortCol(col.name);setSortDir(sortCol===col.name&&sortDir==="asc"?"desc":"asc");}}
+                              >
+                                {sortCol===col.name
+                                  ?(sortDir==="asc"?<SortAsc className="w-3 h-3"/>:<SortDesc className="w-3 h-3"/>)
+                                  :<ChevronDown className="w-3 h-3 opacity-40"/>}
                               </button>
                             </div>
                           </div>
