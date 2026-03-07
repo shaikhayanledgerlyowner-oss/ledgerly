@@ -276,46 +276,58 @@ export default function TablesPage(){
   };
 
   const saveCell=async(rowId:string,colName:string,val:string,skipHistory=false)=>{
-    if(savingRef.current)return;
-    savingRef.current=true;
-    const col=colsRef.current.find(c=>c.name===colName);
-    const type=(col?.type as ColType)??"text";
-    let value:any=val;
-    if(type==="number"||type==="currency")value=val===""?"":toNum(val);
-    // record undo history
-    if(!skipHistory){
-      const row=rowsRef.current.find(r=>r.id===rowId);
-      const oldVal=(row?.row_data??{})[colName]??"";
-      if(String(oldVal)!==String(value)){
-        undoStack.current.push({rowId,colName,oldVal,newVal:value});
-        if(undoStack.current.length>100)undoStack.current.shift();
-        redoStack.current=[];
-        setCanUndo(true);setCanRedo(false);
-      }
+    if(savingRef.current){
+      // wait briefly and retry once
+      await new Promise(r=>setTimeout(r,50));
     }
-    setRows(p=>p.map(r=>r.id!==rowId?r:{...r,row_data:{...r.row_data,[colName]:value}}));
-    const row=rowsRef.current.find(r=>r.id===rowId);
-    await supabase.from("user_rows").update({row_data:{...(row?.row_data??{}),[colName]:value}}).eq("id",rowId);
-    savingRef.current=false;
+    savingRef.current=true;
+    try{
+      const col=colsRef.current.find(c=>c.name===colName);
+      const type=(col?.type as ColType)??"text";
+      let value:any=val;
+      if(type==="number"||type==="currency")value=val===""?"":toNum(val);
+      if(!skipHistory){
+        const row=rowsRef.current.find(r=>r.id===rowId);
+        const oldVal=(row?.row_data??{})[colName]??"";
+        if(String(oldVal)!==String(value)){
+          undoStack.current.push({rowId,colName,oldVal,newVal:value});
+          if(undoStack.current.length>100)undoStack.current.shift();
+          redoStack.current=[];
+          setCanUndo(true);setCanRedo(false);
+        }
+      }
+      setRows(p=>p.map(r=>r.id!==rowId?r:{...r,row_data:{...r.row_data,[colName]:value}}));
+      const row=rowsRef.current.find(r=>r.id===rowId);
+      await supabase.from("user_rows").update({row_data:{...(row?.row_data??{}),[colName]:value}}).eq("id",rowId);
+    }finally{
+      savingRef.current=false;
+    }
   };
 
   // ── undo / redo ───────────────────────────────────────────────────────────
   const doUndo=async()=>{
     const entry=undoStack.current.pop();
-    if(!entry)return;
+    if(!entry){toast("Nothing to undo",{duration:800});return;}
     redoStack.current.push(entry);
     setCanUndo(undoStack.current.length>0);setCanRedo(true);
-    await saveCell(entry.rowId,entry.colName,String(entry.oldVal??""),true);
-    toast("Undo",{duration:800});
+    // directly update rows + DB, bypass saveCell history tracking
+    setRows(p=>p.map(r=>r.id!==entry.rowId?r:{...r,row_data:{...r.row_data,[entry.colName]:entry.oldVal}}));
+    const row=rowsRef.current.find(r=>r.id===entry.rowId);
+    await supabase.from("user_rows").update({row_data:{...(row?.row_data??{}),[entry.colName]:entry.oldVal}}).eq("id",entry.rowId);
+    toast("↩ Undone",{duration:800});
   };
   const doRedo=async()=>{
     const entry=redoStack.current.pop();
-    if(!entry)return;
+    if(!entry){toast("Nothing to redo",{duration:800});return;}
     undoStack.current.push(entry);
     setCanUndo(true);setCanRedo(redoStack.current.length>0);
-    await saveCell(entry.rowId,entry.colName,String(entry.newVal??""),true);
-    toast("Redo",{duration:800});
+    setRows(p=>p.map(r=>r.id!==entry.rowId?r:{...r,row_data:{...r.row_data,[entry.colName]:entry.newVal}}));
+    const row=rowsRef.current.find(r=>r.id===entry.rowId);
+    await supabase.from("user_rows").update({row_data:{...(row?.row_data??{}),[entry.colName]:entry.newVal}}).eq("id",entry.rowId);
+    toast("↪ Redone",{duration:800});
   };
+  // keep refs updated so keydown listener always calls latest version
+  useEffect(()=>{doUndoRef.current=doUndo;doRedoRef.current=doRedo;});
 
   const filtered=useMemo(()=>{
     let list=[...rows];
@@ -332,14 +344,14 @@ export default function TablesPage(){
   },[rows,search,sortCol,sortDir,columns]);
   useEffect(()=>{rowsRef.current=filtered;},[filtered]);
 
-  // ── Ctrl+Z / Ctrl+Y global ────────────────────────────────────────────────
+  // ── Ctrl+Z / Ctrl+Y global ─────────────────────────────────────────────────
+  // doUndo/doRedo are defined AFTER this, so use refs to avoid stale closure
+  const doUndoRef=useRef<()=>Promise<void>>(async()=>{});
+  const doRedoRef=useRef<()=>Promise<void>>(async()=>{});
   useEffect(()=>{
     const onKey=async(e:KeyboardEvent)=>{
-      const tag=(e.target as HTMLElement)?.tagName;
-      // only fire when not typing in an input (let cell input handle its own undo)
-      if(tag==="INPUT"||tag==="TEXTAREA") return;
-      if((e.ctrlKey||e.metaKey)&&e.key==="z"){e.preventDefault();await doUndo();}
-      if((e.ctrlKey||e.metaKey)&&(e.key==="y"||(e.key==="z"&&e.shiftKey))){e.preventDefault();await doRedo();}
+      if((e.ctrlKey||e.metaKey)&&!e.shiftKey&&e.key==="z"){e.preventDefault();await doUndoRef.current();}
+      if((e.ctrlKey||e.metaKey)&&(e.key==="y"||(e.shiftKey&&e.key==="z"))){e.preventDefault();await doRedoRef.current();}
     };
     window.addEventListener("keydown",onKey);
     return()=>window.removeEventListener("keydown",onKey);
@@ -657,7 +669,7 @@ export default function TablesPage(){
         ):columns.length===0?(
           <div className="flex-1 flex items-center justify-center" onContextMenu={e=>openCtx(e)}><div className="text-center"><Table2 className="w-12 h-12 mx-auto mb-3 text-muted-foreground/30"/><h3 className="font-semibold mb-1">Empty Sheet</h3><Button onClick={addColumn} className="gap-2 mt-2"><Plus className="w-4 h-4"/>Add Column</Button></div></div>
         ):(
-          <div className="flex-1 overflow-auto bg-white dark:bg-background" onContextMenu={e=>openCtx(e)}>
+          <div className="flex-1 overflow-auto bg-white dark:bg-background" style={{overflowX:"auto",overflowY:"auto"}} onContextMenu={e=>openCtx(e)}>
             <table className="border-collapse text-sm min-w-full" style={{tableLayout:"fixed"}}>
               <colgroup>
                 <col style={{width:"44px"}}/>
@@ -800,13 +812,21 @@ export default function TablesPage(){
                             {/* DRAG HANDLE — visible on any selected cell */}
                             {isSel&&(
                               <div
-                                className="absolute bottom-0 right-0 w-3 h-3 bg-[#1a73e8] border-2 border-white z-30 cursor-crosshair"
-                                style={{transform:"translate(50%,50%)"}}
-                                title="Drag to fill • Ctrl+drag to copy"
+                                className="absolute z-50 cursor-crosshair"
+                                style={{
+                                  bottom:"-5px",
+                                  right:"-5px",
+                                  width:"10px",
+                                  height:"10px",
+                                  background:"#1a73e8",
+                                  border:"2px solid white",
+                                  boxShadow:"0 0 0 1px #1a73e8",
+                                  pointerEvents:"all",
+                                }}
+                                title="Drag to fill • Ctrl = copy"
                                 onMouseDown={e=>{
                                   e.preventDefault();e.stopPropagation();
                                   const anchorIdx=rowsRef.current.findIndex(x=>x.id===r.id);
-                                  // ✅ store everything in DR ref RIGHT NOW
                                   DR.current={
                                     active:true,
                                     anchorRowId:r.id,
@@ -816,7 +836,7 @@ export default function TablesPage(){
                                     colType:type,
                                     endRowId:r.id,
                                     endIdx:anchorIdx,
-                                    isCopy:false, // will be set from mouseup event
+                                    isCopy:false,
                                   };
                                   setDragRows([r.id]);
                                 }}
