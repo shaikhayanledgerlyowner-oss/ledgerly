@@ -143,6 +143,15 @@ export default function TablesPage(){
   const [showTextPicker,setShowTextPicker]=useState(false);
   const [ctx,setCtx]=useState<CtxMenu|null>(null);
 
+  // ── Track Ctrl key globally so drag fill always knows ──
+  useEffect(()=>{
+    const dn=(e:KeyboardEvent)=>{if(e.key==="Control"||e.key==="Meta") ctrlDragRef.current=true;};
+    const up=(e:KeyboardEvent)=>{if(e.key==="Control"||e.key==="Meta") ctrlDragRef.current=false;};
+    window.addEventListener("keydown",dn);
+    window.addEventListener("keyup",up);
+    return()=>{window.removeEventListener("keydown",dn);window.removeEventListener("keyup",up);};
+  },[]);
+
   useEffect(()=>{editValRef.current=editVal;},[editVal]);
   useEffect(()=>{colsRef.current=columns;},[columns]);
   const cellKey=(r:string,c:string)=>`${r}__${c}`;
@@ -824,7 +833,7 @@ export default function TablesPage(){
                                 title="Drag to fill (Ctrl = copy)"
                                 onMouseDown={e=>{
                                   e.preventDefault();e.stopPropagation();
-                                  ctrlDragRef.current=e.ctrlKey||e.metaKey;
+                                  // ctrlDragRef already tracked by global keydown listener
                                   isDragging.current=true;
                                   dragAnchorRef.current={rowId:r.id,colName:col.name,anchorIdx:rowsRef.current.findIndex(x=>x.id===r.id)};
                                   dragEndRowIdRef.current=r.id;
