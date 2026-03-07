@@ -281,10 +281,16 @@ export default function TablesPage() {
     setRows((prev) => prev.filter((r) => r.id !== rowId));
   };
 
-  const startEditCell = (rowId: string, colName: string, current: any) => {
+  // ✅ Track mousedown on cell to prevent onBlur killing the new cell
+  const mouseDownOnCellRef = useRef<{ rowId: string; colName: string } | null>(null);
+
+  const startEditCell = (rowId: string, colName: string, _current?: any) => {
     const col = columnsRef.current.find((c) => c.name === colName);
     const type = (col?.type as ColumnType) ?? "text";
-    let displayVal = current == null ? "" : String(current);
+    // ✅ Always read fresh value from rowsRef — fixes blank value bug
+    const latestRow = rowsRef.current.find((r) => r.id === rowId);
+    const latestVal = latestRow ? ((latestRow.row_data ?? {}) as Record<string, any>)[colName] : "";
+    let displayVal = latestVal == null ? "" : String(latestVal);
     if (type === "date" && displayVal) displayVal = formatDateDMY(displayVal) || displayVal;
     originalValueRef.current = displayVal;
     setEditingCell({ rowId, colName });
@@ -335,9 +341,7 @@ export default function TablesPage() {
   useEffect(() => { rowsRef.current = filteredAndSortedRows; }, [filteredAndSortedRows]);
 
   const startEditAndFocus = (rowId: string, colName: string) => {
-    const row = rowsRef.current.find((r) => r.id === rowId);
-    const rd = (row?.row_data ?? {}) as Record<string, any>;
-    startEditCell(rowId, colName, rd[colName]);
+    startEditCell(rowId, colName);
     focusCell(rowId, colName);
   };
 
@@ -663,10 +667,13 @@ export default function TablesPage() {
                             return (
                               <td key={col.id}
                                 className={`px-3 py-2 text-sm cursor-pointer ${isFillSelected ? "bg-primary/10" : ""}`}
+                                onMouseDown={() => { mouseDownOnCellRef.current = { rowId: r.id, colName: col.name }; }}
                                 onClick={() => {
+                                  mouseDownOnCellRef.current = null;
                                   if (fillAnchor && fillAnchor.colName === col.name && !isEditing) {
                                     setFillEnd({ rowId: r.id, colName: col.name }); return;
                                   }
+                                  if (isEditing) return; // already editing this cell
                                   startEditAndFocus(r.id, col.name);
                                 }}
                               >
@@ -677,7 +684,15 @@ export default function TablesPage() {
                                     inputMode={type === "number" || type === "currency" ? "decimal" : "text"}
                                     value={editValue}
                                     onChange={(e) => setEditValue(e.target.value)}
-                                    onBlur={() => saveCellNow(r.id, col.name, editValue).then(() => { setEditingCell(null); setEditValue(""); })}
+                                    onBlur={() => {
+                                      // ✅ If user clicked another cell, skip blur-close (td onClick will open it)
+                                      // Small delay so mousedown registers before blur fires
+                                      setTimeout(async () => {
+                                        await saveCellNow(r.id, col.name, editValueRef.current);
+                                        setEditingCell(null);
+                                        setEditValue("");
+                                      }, 0);
+                                    }}
                                     placeholder={type === "date" ? "DD/MM/YYYY" : ""}
                                     // ✅ enterKeyHint="next" prevents mobile keyboard from closing
                                     enterKeyHint="next"
