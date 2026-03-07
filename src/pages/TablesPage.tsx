@@ -102,6 +102,12 @@ export default function TablesPage(){
 
   const [selCells,setSelCells]=useState<Set<string>>(new Set());
 
+  // ── undo/redo ────────────────────────────────────────────────────────────
+  const undoStack=useRef<{rowId:string;colName:string;oldVal:any;newVal:any;}[]>([]);
+  const redoStack=useRef<{rowId:string;colName:string;oldVal:any;newVal:any;}[]>([]);
+  const [canUndo,setCanUndo]=useState(false);
+  const [canRedo,setCanRedo]=useState(false);
+
   const [search,setSearch]=useState("");
   const [sortCol,setSortCol]=useState<string|null>(null);
   const [sortDir,setSortDir]=useState<"asc"|"desc">("asc");
@@ -171,7 +177,13 @@ export default function TablesPage(){
     try{if((meta as any)?.style_map)setStyleMap(JSON.parse((meta as any).style_map));else setStyleMap({});}catch{setStyleMap({});}
   };
   useEffect(()=>{loadTables();},[uid]);
-  useEffect(()=>{if(selTable)loadData(selTable.id);else{setColumns([]);setRows([]);setStyleMap({});}},[selTable?.id]);
+  useEffect(()=>{
+    if(selTable)loadData(selTable.id);
+    else{setColumns([]);setRows([]);setStyleMap({});}
+    // clear history on table switch
+    undoStack.current=[];redoStack.current=[];
+    setCanUndo(false);setCanRedo(false);
+  },[selTable?.id]);
 
   const saveStyles=async(map:StyleMap)=>{
     if(!selTable)return;
@@ -263,17 +275,46 @@ export default function TablesPage(){
     if(focus)focusCell(rowId,colName);
   };
 
-  const saveCell=async(rowId:string,colName:string,val:string)=>{
+  const saveCell=async(rowId:string,colName:string,val:string,skipHistory=false)=>{
     if(savingRef.current)return;
     savingRef.current=true;
     const col=colsRef.current.find(c=>c.name===colName);
     const type=(col?.type as ColType)??"text";
     let value:any=val;
     if(type==="number"||type==="currency")value=val===""?"":toNum(val);
+    // record undo history
+    if(!skipHistory){
+      const row=rowsRef.current.find(r=>r.id===rowId);
+      const oldVal=(row?.row_data??{})[colName]??"";
+      if(String(oldVal)!==String(value)){
+        undoStack.current.push({rowId,colName,oldVal,newVal:value});
+        if(undoStack.current.length>100)undoStack.current.shift();
+        redoStack.current=[];
+        setCanUndo(true);setCanRedo(false);
+      }
+    }
     setRows(p=>p.map(r=>r.id!==rowId?r:{...r,row_data:{...r.row_data,[colName]:value}}));
     const row=rowsRef.current.find(r=>r.id===rowId);
     await supabase.from("user_rows").update({row_data:{...(row?.row_data??{}),[colName]:value}}).eq("id",rowId);
     savingRef.current=false;
+  };
+
+  // ── undo / redo ───────────────────────────────────────────────────────────
+  const doUndo=async()=>{
+    const entry=undoStack.current.pop();
+    if(!entry)return;
+    redoStack.current.push(entry);
+    setCanUndo(undoStack.current.length>0);setCanRedo(true);
+    await saveCell(entry.rowId,entry.colName,String(entry.oldVal??""),true);
+    toast("Undo",{duration:800});
+  };
+  const doRedo=async()=>{
+    const entry=redoStack.current.pop();
+    if(!entry)return;
+    undoStack.current.push(entry);
+    setCanUndo(true);setCanRedo(redoStack.current.length>0);
+    await saveCell(entry.rowId,entry.colName,String(entry.newVal??""),true);
+    toast("Redo",{duration:800});
   };
 
   const filtered=useMemo(()=>{
@@ -290,6 +331,19 @@ export default function TablesPage(){
     return list;
   },[rows,search,sortCol,sortDir,columns]);
   useEffect(()=>{rowsRef.current=filtered;},[filtered]);
+
+  // ── Ctrl+Z / Ctrl+Y global ────────────────────────────────────────────────
+  useEffect(()=>{
+    const onKey=async(e:KeyboardEvent)=>{
+      const tag=(e.target as HTMLElement)?.tagName;
+      // only fire when not typing in an input (let cell input handle its own undo)
+      if(tag==="INPUT"||tag==="TEXTAREA") return;
+      if((e.ctrlKey||e.metaKey)&&e.key==="z"){e.preventDefault();await doUndo();}
+      if((e.ctrlKey||e.metaKey)&&(e.key==="y"||(e.key==="z"&&e.shiftKey))){e.preventDefault();await doRedo();}
+    };
+    window.addEventListener("keydown",onKey);
+    return()=>window.removeEventListener("keydown",onKey);
+  },[]);
 
   const moveCell=async(rowId:string,colName:string,val:string,dir:"right"|"left"|"down"|"up")=>{
     await saveCell(rowId,colName,val);
@@ -475,6 +529,16 @@ export default function TablesPage(){
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none"/>
             <Input className="h-7 pl-7 w-32 text-xs bg-white dark:bg-background" placeholder="Search..." value={search} onChange={e=>setSearch(e.target.value)}/>
           </div>
+          <div className="w-px h-6 bg-border mx-0.5"/>
+          {/* Undo / Redo */}
+          <button title="Undo (Ctrl+Z)" onClick={doUndo} disabled={!canUndo}
+            className={`w-7 h-7 flex items-center justify-center rounded border border-transparent text-sm font-bold transition-colors ${canUndo?"hover:bg-white text-gray-700":"text-gray-300 cursor-not-allowed"}`}>
+            ↩
+          </button>
+          <button title="Redo (Ctrl+Y)" onClick={doRedo} disabled={!canRedo}
+            className={`w-7 h-7 flex items-center justify-center rounded border border-transparent text-sm font-bold transition-colors ${canRedo?"hover:bg-white text-gray-700":"text-gray-300 cursor-not-allowed"}`}>
+            ↪
+          </button>
           <div className="w-px h-6 bg-border mx-0.5"/>
           <button title="Bold" onClick={()=>applyStyle({bold:!firstStyle.bold})}
             className={`w-7 h-7 flex items-center justify-center rounded text-sm font-bold border hover:bg-white transition-colors ${firstStyle.bold?"bg-blue-100 border-blue-400 text-blue-700":"border-transparent text-gray-700"}`}>B</button>
