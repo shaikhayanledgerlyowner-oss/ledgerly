@@ -27,7 +27,7 @@ import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
 
-type ColType = "text"|"number"|"currency"|"date";
+type ColType = "text"|"number"|"currency"|"date"|"amount";
 interface DbTable  { id:string; user_id:string; name:string; created_at:string; }
 interface DbColumn { id:string; table_id:string; name:string; type:string; created_at:string; }
 interface DbRow    { id:string; table_id:string; row_data:Record<string,any>; created_at:string; }
@@ -58,6 +58,7 @@ const toDMY=(iso:string):string=>{
 const dispCell=(v:any,t:ColType):string=>{
   if(v==null||v==="") return "";
   if(t==="currency") return `₹${toNum(v).toLocaleString("en-IN")}`;
+  if(t==="amount")   return `₹${toNum(v).toLocaleString("en-IN")}`;
   if(t==="number")   return toNum(v).toLocaleString("en-IN");
   if(t==="date")     return toDMY(String(v));
   return String(v);
@@ -68,7 +69,7 @@ const dispCell=(v:any,t:ColType):string=>{
 // isCopy=false → number/date series; text always copies
 const calcFill=(anchor:any, t:ColType, step:number, isCopy:boolean):any=>{
   if(isCopy || t==="text") return anchor;
-  if(t==="number"||t==="currency") return toNum(anchor)+step;
+  if(t==="number"||t==="currency"||t==="amount") return toNum(anchor)+step;
   if(t==="date"&&anchor){
     const d=new Date(String(anchor)+"T00:00:00");
     if(!isNaN(d.getTime())){d.setDate(d.getDate()+step);return d.toISOString().slice(0,10);}
@@ -81,6 +82,7 @@ const TX_COLORS=["#000000","#1e293b","#dc2626","#16a34a","#2563eb","#9333ea","#e
 const TYPE_ICO:Record<string,React.ReactNode>={
   text:<Type className="w-3 h-3"/>,number:<Hash className="w-3 h-3"/>,
   currency:<DollarSign className="w-3 h-3"/>,date:<Calendar className="w-3 h-3"/>,
+  amount:<span className="text-[10px] font-bold leading-none">₹</span>,
 };
 const colLetter=(i:number):string=>{
   let s="",n=i+1;while(n>0){s=String.fromCharCode(64+(n%26||26))+s;n=Math.floor((n-1)/26);}return s;
@@ -285,7 +287,7 @@ export default function TablesPage(){
       const col=colsRef.current.find(c=>c.name===colName);
       const type=(col?.type as ColType)??"text";
       let value:any=val;
-      if(type==="number"||type==="currency")value=val===""?"":toNum(val);
+      if(type==="number"||type==="currency"||type==="amount")value=val===""?"":toNum(val);
       if(!skipHistory){
         const row=rowsRef.current.find(r=>r.id===rowId);
         const oldVal=(row?.row_data??{})[colName]??"";
@@ -336,7 +338,7 @@ export default function TablesPage(){
       const col=columns.find(c=>c.name===sortCol);const tp=(col?.type as ColType)??"text";
       list.sort((a,b)=>{
         const av=a.row_data[sortCol]??"",bv=b.row_data[sortCol]??"";
-        if(tp==="number"||tp==="currency")return sortDir==="asc"?toNum(av)-toNum(bv):toNum(bv)-toNum(av);
+        if(tp==="number"||tp==="currency"||tp==="amount")return sortDir==="asc"?toNum(av)-toNum(bv):toNum(bv)-toNum(av);
         return sortDir==="asc"?String(av).localeCompare(String(bv)):String(bv).localeCompare(String(av));
       });
     }
@@ -373,7 +375,7 @@ export default function TablesPage(){
 
   const totals=useMemo(()=>{
     const t:Record<string,number>={};
-    columns.forEach(c=>{if(c.type==="number"||c.type==="currency")t[c.name]=rows.reduce((s,r)=>s+toNum(r.row_data[c.name]),0);});
+    columns.forEach(c=>{if(c.type==="number"||c.type==="currency"||c.type==="amount")t[c.name]=rows.reduce((s,r)=>s+toNum(r.row_data[c.name]),0);});
     return t;
   },[columns,rows]);
 
@@ -465,7 +467,7 @@ export default function TablesPage(){
     doc.setFont("helvetica","normal");doc.setFontSize(10);doc.text(`Exported: ${new Date().toLocaleString()}`,40,62);
     const body=filtered.map(r=>columns.map(c=>{
       const v=r.row_data[c.name];const t=c.type as ColType;
-      if(t==="currency")return`Rs. ${toNum(v).toLocaleString("en-IN",{minimumFractionDigits:2})}`;
+      if(t==="currency"||t==="amount")return`Rs. ${toNum(v).toLocaleString("en-IN",{minimumFractionDigits:2})}`;
       if(t==="number")return toNum(v).toLocaleString("en-IN");
       if(t==="date")return toDMY(String(v??""));
       return v==null?"":String(v);
@@ -481,7 +483,7 @@ export default function TablesPage(){
     const header=columns.map(c=>c.name);
     const data=filtered.map(r=>columns.map(c=>{
       const v=r.row_data[c.name];const t=c.type as ColType;
-      if(t==="number"||t==="currency")return v===""||v==null?"":toNum(v);
+      if(t==="number"||t==="currency"||t==="amount")return v===""||v==null?"":toNum(v);
       if(t==="date")return toDMY(String(v??""));
       return v==null?"":String(v);
     }));
@@ -698,7 +700,7 @@ export default function TablesPage(){
                             <Select value={renamingColType} onValueChange={v=>setRenamingColType(v as ColType)}>
                               <SelectTrigger className="h-6 w-8 p-0 border-0 bg-transparent [&>svg]:hidden shrink-0"><span className="flex items-center justify-center">{TYPE_ICO[renamingColType]}</span></SelectTrigger>
                               <SelectContent>
-                                {["text","number","currency","date"].map(t=><SelectItem key={t} value={t}><span className="flex gap-2 items-center">{TYPE_ICO[t]}{t.charAt(0).toUpperCase()+t.slice(1)}</span></SelectItem>)}
+                                {["text","number","currency","amount","date"].map(t=><SelectItem key={t} value={t}><span className="flex gap-2 items-center">{TYPE_ICO[t]}{t==="amount"?"Amount (₹)":t.charAt(0).toUpperCase()+t.slice(1)}</span></SelectItem>)}
                               </SelectContent>
                             </Select>
                           </div>
@@ -770,7 +772,7 @@ export default function TablesPage(){
                                 <Input
                                   ref={el=>{cellRefs.current[ck(r.id,col.name)]=el;}}
                                   type={type==="date"?"date":"text"}
-                                  inputMode={type==="number"||type==="currency"?"decimal":undefined}
+                                  inputMode={type==="number"||type==="currency"||type==="amount"?"decimal":undefined}
                                   value={editVal}
                                   onChange={e=>{
                                     const v=e.target.value;setEditVal(v);
@@ -803,7 +805,7 @@ export default function TablesPage(){
                                 )}
                               </div>
                             ):(
-                              <div className={`px-2 h-full flex items-center text-xs overflow-hidden whitespace-nowrap ${type==="currency"?"text-primary font-medium":""} ${type==="number"&&!cs?.align?"justify-end":""}`}
+                              <div className={`px-2 h-full flex items-center text-xs overflow-hidden whitespace-nowrap ${type==="currency"||type==="amount"?"text-primary font-medium":""} ${type==="number"&&!cs?.align?"justify-end":""}`}
                                 style={{fontWeight:cs?.bold?"bold":"normal",color:cs?.color,justifyContent:cs?.align==="center"?"center":cs?.align==="right"?"flex-end":cs?.align==="left"?"flex-start":undefined}}>
                                 {dispCell(raw,type)||<span className="text-transparent">·</span>}
                               </div>
