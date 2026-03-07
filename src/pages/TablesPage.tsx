@@ -676,10 +676,16 @@ export default function TablesPage(){
                         className={`border border-[#d0d0d0] dark:border-border h-8 text-xs font-medium select-none relative group cursor-pointer transition-colors ${colSelected?"bg-[#cce0ff] dark:bg-blue-900/40":"bg-[#f2f2f2] dark:bg-muted hover:bg-[#e8e8e8]"}`}
                         onContextMenu={e=>openCtx(e,undefined,col.id,col.name)}
                         onClick={e=>{
-                          // single click on header = select column (unless renaming)
-                          if(renamingColId!==col.id) selectColumn(col.name);
+                          // ✅ single click = select whole column (so you can color/bold it)
+                          if(renamingColId!==col.id){
+                            selectColumn(col.name);
+                            setEditCell(null); // exit any edit mode
+                          }
                         }}
-                        onDoubleClick={()=>{setRenamingColId(col.id);setRenamingColVal(col.name);setRenamingColType(type);}}
+                        onDoubleClick={e=>{
+                          e.stopPropagation();
+                          setRenamingColId(col.id);setRenamingColVal(col.name);setRenamingColType(type);
+                        }}
                       >
                         {renamingColId===col.id?(
                           <div className="flex items-center gap-1 px-1" onClick={e=>e.stopPropagation()}>
@@ -752,13 +758,15 @@ export default function TablesPage(){
                             onContextMenu={e=>openCtx(e,r.id,col.id,col.name)}
                             onMouseDown={e=>{
                               if(isDragging.current) return;
+                              if(e.button!==0) return;
                               if(!isEd){
+                                // ✅ Single click = immediately edit + select
+                                e.preventDefault();
+                                startEditAndFocus(r.id,col.name);
                                 onCellMouseDown(r.id,col.name,e);
-                                // double click = edit handled separately by onClick timing
                               }
                             }}
                             onMouseEnter={()=>onCellMouseEnter(r.id,col.name)}
-                            onClick={()=>{if(!isEd)startEditAndFocus(r.id,col.name);}}
                           >
                             {isEd?(
                               <div className="relative w-full h-full">
@@ -773,7 +781,9 @@ export default function TablesPage(){
                                     setFbarVal(type==="date"?toDMY(v):v);
                                     if(type==="text") setAcSugg(getAutoSugg(col.name,v,r.id));
                                   }}
-                                  onBlur={async()=>{
+                                  onBlur={async(e)=>{
+                                    // Don't save if clicking the drag handle
+                                    if((e.relatedTarget as HTMLElement)?.title?.includes("Drag")) return;
                                     await saveCellNow(r.id,col.name,editValRef.current);
                                     setEditCell(null);setEditVal("");setFbarVal("");setAcSugg("");
                                   }}
