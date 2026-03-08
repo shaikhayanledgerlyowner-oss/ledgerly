@@ -77,7 +77,7 @@ function drawBarChart(canvas:HTMLCanvasElement,chartRows:Record<string,any>[],am
     const hue=COLORS[0];
     ctx.fillStyle=hue;
     ctx.beginPath();
-    (ctx as any).roundRect?.(ctx as any).roundRect(x,y,barW,barH,3):ctx.rect(x,y,barW,barH);
+    if(typeof (ctx as any).roundRect==="function"){(ctx as any).roundRect(x,y,barW,barH,3);}else{ctx.rect(x,y,barW,barH);}
     ctx.fill();
     // x label
     ctx.fillStyle="#6b7280";ctx.font="8px Arial";ctx.textAlign="center";
