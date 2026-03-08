@@ -91,6 +91,57 @@ const ck=(r:string,c:string)=>`${r}__${c}`;
 
 interface Ctx{x:number;y:number;rowId?:string;colId?:string;colName?:string;}
 
+// ── Standalone color picker button (no Popover, immune to window click handlers) ──
+function ColColorBtn({currentBg, onPick}:{currentBg?:string; onPick:(c:string|null)=>void}){
+  const [open,setOpen]=useState(false);
+  const ref=useRef<HTMLDivElement>(null);
+  // close when clicking outside THIS component only
+  useEffect(()=>{
+    if(!open)return;
+    const handler=(e:MouseEvent)=>{
+      if(ref.current&&!ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    // use capture so we get it before window click closes context menu
+    document.addEventListener("mousedown",handler,true);
+    return()=>document.removeEventListener("mousedown",handler,true);
+  },[open]);
+  const COLORS=["#ffffff","#fef9c3","#dcfce7","#dbeafe","#fce7f3","#fee2e2","#e0e7ff","#f3f4f6","#ffd700","#ff8c00","#ff6b6b","#22c55e","#3b82f6","#a855f7","#1e293b"];
+  return(
+    <div ref={ref} className="relative" style={{zIndex:9999}} data-colcolor="1">
+      <button
+        title="Column color"
+        className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/70"
+        onMouseDown={e=>{e.preventDefault();e.stopPropagation();setOpen(o=>!o);}}
+      >
+        <div className="w-3 h-3 rounded-sm border border-gray-400" style={{background:currentBg??"transparent"}}/>
+      </button>
+      {open&&(
+        <div
+          className="absolute top-full left-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl p-2"
+          style={{zIndex:99999,minWidth:"148px"}}
+          onMouseDown={e=>{e.preventDefault();e.stopPropagation();}}
+        >
+          <p className="text-xs font-semibold mb-2 text-gray-500">Column color</p>
+          <div className="grid grid-cols-5 gap-1 mb-2">
+            {COLORS.map(c=>(
+              <button key={c}
+                className="w-6 h-6 rounded border-2 hover:scale-110 transition-all"
+                style={{background:c,borderColor:currentBg===c?"#3b82f6":"#e5e7eb"}}
+                onMouseDown={e=>{e.preventDefault();e.stopPropagation();}}
+                onClick={()=>{onPick(c);setOpen(false);}}
+              />
+            ))}
+          </div>
+          <button
+            className="w-full text-xs py-1 rounded hover:bg-gray-100 text-gray-500 border border-dashed border-gray-300"
+            onClick={()=>{onPick(null);setOpen(false);}}
+          >✕ Clear</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 export default function TablesPage(){
   const {profile,hasAccess}=useAuth();
@@ -449,7 +500,15 @@ export default function TablesPage(){
   const openCtx=(e:React.MouseEvent,rowId?:string,colId?:string,colName?:string)=>{
     e.preventDefault();e.stopPropagation();setCtx({x:e.clientX,y:e.clientY,rowId,colId,colName});
   };
-  useEffect(()=>{const c=()=>setCtx(null);window.addEventListener("click",c);return()=>window.removeEventListener("click",c);},[]);
+  useEffect(()=>{
+    const c=(e:MouseEvent)=>{
+      // don't close context menu if click is inside a col-color-btn dropdown
+      if((e.target as HTMLElement)?.closest?.("[data-colcolor]")) return;
+      setCtx(null);
+    };
+    window.addEventListener("click",c);
+    return()=>window.removeEventListener("click",c);
+  },[]);
 
   const doCount=()=>{
     const a=countConds.filter(c=>c.col&&c.crit);
@@ -740,49 +799,19 @@ export default function TablesPage(){
                               <span className="truncate text-xs">{col.name}</span>
                             </div>
 
-                            {/* Right: color + sort — always visible on hover */}
+                            {/* Right: color + sort */}
                             <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 shrink-0">
-                              {/* Column color button — portal rendered, won't be closed by window click */}
-                              <Popover modal={true}>
-                                <PopoverTrigger asChild>
-                                  <button
-                                    className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/70"
-                                    title="Color this column"
-                                    onMouseDown={e=>{e.preventDefault();e.stopPropagation();}}
-                                  >
-                                    <div className="w-3 h-3 rounded-sm border border-gray-400" style={{background:firstColStyle?.bg??"transparent"}}/>
-                                  </button>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-auto p-2" align="start" side="bottom" sideOffset={4}>
-                                  <p className="text-xs font-semibold mb-2 text-gray-600">Column color</p>
-                                  <div className="grid grid-cols-5 gap-1 mb-1">
-                                    {BG_COLORS.map(c=>(
-                                      <button key={c}
-                                        className="w-6 h-6 rounded border-2 hover:scale-110 transition-all border-gray-200"
-                                        style={{background:c}}
-                                        onMouseDown={e=>{e.preventDefault();e.stopPropagation();}}
-                                        onClick={()=>{
-                                          setStyleMap(prev=>{
-                                            const next={...prev};
-                                            rowsRef.current.forEach(r=>{const k=ck(r.id,col.name);next[k]={...(next[k]??{}),bg:c};});
-                                            saveStyles(next);return next;
-                                          });
-                                        }}
-                                      />
-                                    ))}
-                                  </div>
-                                  <button
-                                    className="w-full text-xs py-1 rounded hover:bg-gray-100 text-gray-500 border border-dashed border-gray-300"
-                                    onClick={()=>{
-                                      setStyleMap(prev=>{
-                                        const next={...prev};
-                                        rowsRef.current.forEach(r=>{const k=ck(r.id,col.name);if(next[k])delete next[k].bg;});
-                                        saveStyles(next);return next;
-                                      });
-                                    }}
-                                  >Clear</button>
-                                </PopoverContent>
-                              </Popover>
+                              {/* Column color — custom dropdown, immune to window click handler */}
+                              <ColColorBtn
+                                currentBg={firstColStyle?.bg}
+                                onPick={(c)=>{
+                                  setStyleMap(prev=>{
+                                    const next={...prev};
+                                    rowsRef.current.forEach(r=>{const k=ck(r.id,col.name);next[k]={...(next[k]??{}),bg:c??undefined};});
+                                    saveStyles(next);return next;
+                                  });
+                                }}
+                              />
 
                               {/* Sort button */}
                               <button
