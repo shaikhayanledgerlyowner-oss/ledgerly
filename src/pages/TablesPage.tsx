@@ -742,35 +742,30 @@ export default function TablesPage(){
 
                             {/* Right: color + sort — always visible on hover */}
                             <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 shrink-0">
-                              {/* Column color button */}
-                              <Popover>
+                              {/* Column color button — portal rendered, won't be closed by window click */}
+                              <Popover modal={true}>
                                 <PopoverTrigger asChild>
                                   <button
                                     className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/70"
                                     title="Color this column"
-                                    onClick={e=>e.stopPropagation()}
+                                    onMouseDown={e=>{e.preventDefault();e.stopPropagation();}}
                                   >
                                     <div className="w-3 h-3 rounded-sm border border-gray-400" style={{background:firstColStyle?.bg??"transparent"}}/>
                                   </button>
                                 </PopoverTrigger>
-                                <PopoverContent className="w-auto p-2 z-50" align="start" onClick={e=>e.stopPropagation()}>
+                                <PopoverContent className="w-auto p-2" align="start" side="bottom" sideOffset={4}>
                                   <p className="text-xs font-semibold mb-2 text-gray-600">Column color</p>
                                   <div className="grid grid-cols-5 gap-1 mb-1">
                                     {BG_COLORS.map(c=>(
                                       <button key={c}
                                         className="w-6 h-6 rounded border-2 hover:scale-110 transition-all border-gray-200"
                                         style={{background:c}}
-                                        onClick={e=>{
-                                          e.stopPropagation();
-                                          // apply bg to ALL cells in this column
+                                        onMouseDown={e=>{e.preventDefault();e.stopPropagation();}}
+                                        onClick={()=>{
                                           setStyleMap(prev=>{
                                             const next={...prev};
-                                            rowsRef.current.forEach(r=>{
-                                              const k=ck(r.id,col.name);
-                                              next[k]={...(next[k]??{}),bg:c};
-                                            });
-                                            saveStyles(next);
-                                            return next;
+                                            rowsRef.current.forEach(r=>{const k=ck(r.id,col.name);next[k]={...(next[k]??{}),bg:c};});
+                                            saveStyles(next);return next;
                                           });
                                         }}
                                       />
@@ -778,16 +773,11 @@ export default function TablesPage(){
                                   </div>
                                   <button
                                     className="w-full text-xs py-1 rounded hover:bg-gray-100 text-gray-500 border border-dashed border-gray-300"
-                                    onClick={e=>{
-                                      e.stopPropagation();
+                                    onClick={()=>{
                                       setStyleMap(prev=>{
                                         const next={...prev};
-                                        rowsRef.current.forEach(r=>{
-                                          const k=ck(r.id,col.name);
-                                          if(next[k])delete next[k].bg;
-                                        });
-                                        saveStyles(next);
-                                        return next;
+                                        rowsRef.current.forEach(r=>{const k=ck(r.id,col.name);if(next[k])delete next[k].bg;});
+                                        saveStyles(next);return next;
                                       });
                                     }}
                                   >Clear</button>
