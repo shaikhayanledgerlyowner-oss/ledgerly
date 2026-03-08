@@ -3,7 +3,7 @@ import {
   Plus, Table2, Trash2, Edit3, Search, SortAsc, SortDesc,
   MoreHorizontal, X, Calculator, Download, FileSpreadsheet,
   AlignLeft, AlignCenter, AlignRight, Palette, RefreshCw,
-  ChevronDown, Calendar, Hash, DollarSign, Type,
+  ChevronDown, Calendar, Hash, DollarSign, Type, IndianRupee,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
@@ -82,7 +82,7 @@ const TX_COLORS=["#000000","#1e293b","#dc2626","#16a34a","#2563eb","#9333ea","#e
 const TYPE_ICO:Record<string,React.ReactNode>={
   text:<Type className="w-3 h-3"/>,number:<Hash className="w-3 h-3"/>,
   currency:<DollarSign className="w-3 h-3"/>,date:<Calendar className="w-3 h-3"/>,
-  amount:<span className="text-[10px] font-bold leading-none">₹</span>,
+  amount:<IndianRupee className="w-3 h-3"/>,
 };
 const colLetter=(i:number):string=>{
   let s="",n=i+1;while(n>0){s=String.fromCharCode(64+(n%26||26))+s;n=Math.floor((n-1)/26);}return s;
@@ -1004,7 +1004,7 @@ export default function TablesPage(){
                     <td className="bg-[#f2f2f2] border border-[#d0d0d0] text-center text-xs text-muted-foreground font-mono h-8 sticky left-0">Σ</td>
                     {columns.map((col,i)=>{const t=totals[col.name];const tp=col.type as ColType;return(
                       <td key={col.id} className="bg-[#f7f7f7] border border-[#d0d0d0] px-2 h-8 text-xs font-semibold">
-                        {t!=null?<span className={tp==="currency"?"text-primary":""}>{tp==="currency"?`₹${t.toLocaleString("en-IN")}`:t.toLocaleString("en-IN")}</span>:(i===0?<span className="text-muted-foreground">Total</span>:"")}
+                        {t!=null?<span className={tp==="currency"||tp==="amount"?"text-primary":""}>{tp==="currency"||tp==="amount"?`₹${t.toLocaleString("en-IN")}`:t.toLocaleString("en-IN")}</span>:(i===0?<span className="text-muted-foreground">Total</span>:"")}
                       </td>
                     );})}
                     <td className="border border-[#d0d0d0] bg-[#f7f7f7]"/>
