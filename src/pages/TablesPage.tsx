@@ -281,11 +281,14 @@ export default function TablesPage(){
   };
   const updateColumn=async(col:DbColumn,nm:string,tp:ColType)=>{
     if(!nm.trim())return;
-    // optimistic update — reflect immediately in UI
+    // optimistic update — reflect immediately, no reload needed
     setColumns(prev=>prev.map(c=>c.id===col.id?{...c,name:nm.trim(),type:tp}:c));
+    if(rows.length&&col.name!==nm.trim()){
+      setRows(prev=>prev.map(r=>{const rd={...r.row_data};rd[nm.trim()]=rd[col.name];delete rd[col.name];return {...r,row_data:rd};}));
+      await Promise.all(rows.map(r=>{const rd={...r.row_data};rd[nm.trim()]=rd[col.name];delete rd[col.name];return supabase.from("user_rows").update({row_data:rd}).eq("id",r.id);}));
+    }
     await supabase.from("user_columns").update({name:nm.trim(),type:tp}).eq("id",col.id);
-    if(rows.length&&col.name!==nm.trim())await Promise.all(rows.map(r=>{const rd={...r.row_data};rd[nm.trim()]=rd[col.name];delete rd[col.name];return supabase.from("user_rows").update({row_data:rd}).eq("id",r.id);}));
-    setRenamingColId(null);if(selTable)await loadData(selTable.id);
+    setRenamingColId(null);
   };
 
   // ── row CRUD ──────────────────────────────────────────────────────────────
