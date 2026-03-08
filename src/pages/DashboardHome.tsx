@@ -275,12 +275,23 @@ export default function DashboardHome() {
   }, [profile, isOwner]);
 
   const displayName = profile?.display_name || profile?.email?.split("@")[0] || "User";
-  const activeRevenue = activeTab === "tables" ? tableRevenue : docRevenue;
-  const activeExpenses = activeTab === "tables" ? tableExpenses : docExpenses;
+
+  // when a specific table is selected, use that table's revenue/expense
+  const selectedTableAnalytics = selectedAnalyticsTableId !== "all"
+    ? tableAnalytics.find(t => t.id === selectedAnalyticsTableId)
+    : null;
+
+  const activeRevenue  = activeTab === "documents" ? docRevenue  : selectedTableAnalytics ? selectedTableAnalytics.revenue  : tableRevenue;
+  const activeExpenses = activeTab === "documents" ? docExpenses : selectedTableAnalytics ? selectedTableAnalytics.expense : tableExpenses;
   const activeNetProfit = activeRevenue - activeExpenses;
+  const selectedTableName = selectedTableAnalytics?.name ?? tableAnalytics.find(t => t.id === selectedAnalyticsTableId)?.name ?? "Selected";
   const activeChartData = activeTab === "documents" ? docChartData : selectedAnalyticsTableId === "all" ? tableChartData : tableChartById[selectedAnalyticsTableId] ?? [];
-  const chartTitle = activeTab === "tables" ? (selectedAnalyticsTableId === "all" ? "Tables Overview (All)" : `Tables Overview (${tableAnalytics.find(t => t.id === selectedAnalyticsTableId)?.name ?? "Selected"})`) : "Documents Overview";
-  const chartSubtitle = activeTab === "tables" ? (selectedAnalyticsTableId === "all" ? "Daily revenue vs expenses from all tables" : "Daily revenue vs expenses from selected table") : "Daily revenue vs expenses from your documents";
+  const chartTitle = activeTab === "tables"
+    ? (selectedAnalyticsTableId === "all" ? "All Tables Overview" : `${selectedTableName}`)
+    : "Documents Overview";
+  const chartSubtitle = activeTab === "tables"
+    ? (selectedAnalyticsTableId === "all" ? "Revenue vs expenses from all tables combined" : `Revenue vs expenses — ${selectedTableName}`)
+    : "Daily revenue vs expenses from your documents";
 
   const quickActions = [
     { label: "Create Table", desc: "Add a new table", icon: Plus, color: "text-success", bg: "bg-success/10", onClick: () => navigate("/dashboard/tables") },
@@ -308,9 +319,15 @@ export default function DashboardHome() {
       </Card>
 
       <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-        <StatCard title={activeTab === "tables" ? "Tables Revenue" : "Documents Revenue"} value={formatCurrency(activeRevenue, userCurrency)} icon={TrendingUp} color="text-success" />
-        <StatCard title={activeTab === "tables" ? "Tables Expenses" : "Documents Expenses"} value={formatCurrency(activeExpenses, userCurrency)} icon={TrendingDown} color="text-destructive" />
-        <StatCard title={activeTab === "tables" ? "Tables Net" : "Documents Net"} value={formatCurrency(activeNetProfit, userCurrency)} icon={IndianRupee} color="text-primary" />
+        <StatCard
+          title={activeTab === "documents" ? "Documents Revenue" : selectedAnalyticsTableId === "all" ? "All Tables Revenue" : `${selectedTableName} Revenue`}
+          value={formatCurrency(activeRevenue, userCurrency)} icon={TrendingUp} color="text-success" />
+        <StatCard
+          title={activeTab === "documents" ? "Documents Expenses" : selectedAnalyticsTableId === "all" ? "All Tables Expenses" : `${selectedTableName} Expenses`}
+          value={formatCurrency(activeExpenses, userCurrency)} icon={TrendingDown} color="text-destructive" />
+        <StatCard
+          title={activeTab === "documents" ? "Documents Net" : selectedAnalyticsTableId === "all" ? "All Tables Net" : `${selectedTableName} Net`}
+          value={formatCurrency(activeNetProfit, userCurrency)} icon={IndianRupee} color="text-primary" />
         <StatCard title="Plan" value={isPremium ? "Premium ✨" : "Free Trial"} icon={isPremium ? Crown : Clock} color={isPremium ? "text-yellow-500" : "text-muted-foreground"} />
       </div>
 
