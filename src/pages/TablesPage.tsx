@@ -281,6 +281,8 @@ export default function TablesPage(){
   };
   const updateColumn=async(col:DbColumn,nm:string,tp:ColType)=>{
     if(!nm.trim())return;
+    // optimistic update — reflect immediately in UI
+    setColumns(prev=>prev.map(c=>c.id===col.id?{...c,name:nm.trim(),type:tp}:c));
     await supabase.from("user_columns").update({name:nm.trim(),type:tp}).eq("id",col.id);
     if(rows.length&&col.name!==nm.trim())await Promise.all(rows.map(r=>{const rd={...r.row_data};rd[nm.trim()]=rd[col.name];delete rd[col.name];return supabase.from("user_rows").update({row_data:rd}).eq("id",r.id);}));
     setRenamingColId(null);if(selTable)await loadData(selTable.id);
@@ -614,7 +616,7 @@ export default function TablesPage(){
                   {(["text","number","currency","amount","date"] as ColType[]).map(t=>(
                     <button key={t}
                       className={`flex flex-col items-center gap-0.5 p-1.5 rounded border text-[10px] transition-all ${type===t?"border-blue-500 bg-blue-50 text-blue-700":"border-gray-200 hover:border-gray-300 hover:bg-gray-50"}`}
-                      onClick={async()=>{await updateColumn(col,col.name,t);setCtx(null);}}>
+                      onClick={()=>{setCtx(null);updateColumn(col,col.name,t);}}>
                       {TYPE_ICO[t]}
                       {t==="amount"?"Amt":t.slice(0,3).charAt(0).toUpperCase()+t.slice(1,4)}
                     </button>
