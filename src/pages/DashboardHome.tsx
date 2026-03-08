@@ -206,7 +206,7 @@ export default function DashboardHome() {
         const { data: colsData } = await supabase.from("user_columns").select("table_id,name,type").in("table_id", tableIds);
         const colsByTable = new Map<string, { name: string; bucket: "revenue" | "expense" }[]>();
         (colsData ?? []).forEach((c: any) => {
-          if (c.type !== "number" && c.type !== "currency") return;
+          if (c.type !== "number" && c.type !== "currency" && c.type !== "amount") return;
           const colName = String(c.name || "").trim();
           if (!colName || (!amountNameRegex.test(colName) && !expenseNameRegex.test(colName))) return;
           const bucket: "revenue" | "expense" = expenseNameRegex.test(colName) ? "expense" : "revenue";
