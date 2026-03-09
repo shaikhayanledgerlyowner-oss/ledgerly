@@ -208,14 +208,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return profile?.role === "OWNER" || user?.email === OWNER_EMAIL;
   }, [profile?.role, user?.email]);
 
-  // ✅ Trial logic
+  // ✅ Trial logic — midnight based (days change at 12:00 AM)
   const trialDaysLeft = useMemo(() => {
     if (!profile?.trial_ends_at) return 0;
     const now = new Date();
     const end = new Date(profile.trial_ends_at);
-    const diffMs = end.getTime() - now.getTime();
-    if (diffMs <= 0) return 0;
-    return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    if (end <= now) return 0;
+    // Compare calendar dates only (midnight-to-midnight)
+    const nowMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const endMidnight = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+    const diffDays = Math.round((endMidnight.getTime() - nowMidnight.getTime()) / (1000 * 60 * 60 * 24));
+    return Math.max(0, diffDays);
   }, [profile?.trial_ends_at]);
 
   const isTrialActive = useMemo(() => {
