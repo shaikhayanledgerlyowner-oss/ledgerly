@@ -338,7 +338,7 @@ export default function AnalyticsPage(){
     <div className="flex flex-col items-center justify-center h-64 text-center gap-3">
       <IndianRupee className="w-16 h-16 text-muted-foreground/20"/>
       <h3 className="text-lg font-semibold">No Amount columns found</h3>
-      <p className="text-muted-foreground text-sm max-w-xs">Tables page mein kisi column ka type <strong>Amount (₹)</strong> set karo.</p>
+      <p className="text-muted-foreground text-sm max-w-xs">Set at least one column type to <strong>Amount (₹)</strong> on the Tables page.</p>
     </div>
   );
 
