@@ -23,6 +23,8 @@ const navItems = [
 ];
 
 const ownerItems = [
+  { to: "/dashboard/notifications", icon: Bell, label: "Notifications" },
+  { to: "/dashboard/verification", icon: Shield, label: "Verification Queue" },
   { to: "/dashboard/wallet", icon: Wallet, label: "Wallet" },
 ];
 
@@ -38,8 +40,31 @@ const pageTitles: Record<string, string> = {
   "/dashboard/wallet": "Wallet",
 };
 
+// Pages allowed even when trial expired
+const ALLOWED_EXPIRED = ["/dashboard", "/dashboard/pricing", "/dashboard/settings"];
+
+function TrialExpiredWall() {
+  const navigate = useNavigate();
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[70vh] text-center px-6">
+      <div className="text-6xl mb-4">🔒</div>
+      <h2 className="text-2xl font-bold mb-2">Your Free Trial Has Ended</h2>
+      <p className="text-muted-foreground max-w-sm mb-6 text-sm leading-relaxed">
+        Your 7-day free trial is over. Upgrade to Premium to continue using Tables, Analytics, Documents and all features.
+      </p>
+      <button
+        onClick={() => navigate("/dashboard/pricing")}
+        className="bg-primary text-primary-foreground font-semibold px-8 py-3 rounded-xl text-sm hover:opacity-90 transition-opacity shadow-lg"
+      >
+        ⭐ Upgrade to Premium
+      </button>
+      <p className="text-xs text-muted-foreground mt-4">You can still access Dashboard, Settings and Pricing.</p>
+    </div>
+  );
+}
+
 export default function DashboardLayout() {
-  const { signOut, isOwner, profile } = useAuth();
+  const { signOut, isOwner, profile, isTrialExpired, isPremium } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [open, setOpen] = useState(false);
@@ -187,7 +212,11 @@ export default function DashboardLayout() {
 
       <main className="flex-1 overflow-y-auto">
         <div className="p-4 md:p-6 lg:p-8 w-full">
-          <Outlet />
+          {/* Trial expired check — owner aur premium ke liye bypass */}
+          {!isOwner && !isPremium && isTrialExpired && !ALLOWED_EXPIRED.includes(location.pathname)
+            ? <TrialExpiredWall />
+            : <Outlet />
+          }
         </div>
       </main>
     </div>
