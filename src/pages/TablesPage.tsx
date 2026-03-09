@@ -240,7 +240,8 @@ export default function TablesPage(){
 
   const saveStyles=async(map:StyleMap)=>{
     if(!selTable)return;
-    await supabase.from("user_tables").update({style_map:JSON.stringify(map)} as any).eq("id",selTable.id);
+    const {error}=await supabase.from("user_tables").update({style_map:JSON.stringify(map)} as any).eq("id",selTable.id);
+    if(error) console.error("[saveStyles] DB error:",error.message,"— Run SQL: ALTER TABLE user_tables ADD COLUMN IF NOT EXISTS style_map text;");
   };
   const applyStyle=(patch:Partial<CellStyle>)=>{
     if(!selCells.size) return;
