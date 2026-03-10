@@ -60,16 +60,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const email = u.email ?? "";
     const role: UserRole = email === OWNER_EMAIL ? "OWNER" : "CUSTOMER";
 
-    const payload = {
+    // First check if user already exists
+    const { data: existing } = await supabase
+      .from("profiles")
+      .select("id, trial_ends_at")
+      .eq("id", u.id)
+      .maybeSingle();
+
+    const payload: any = {
       id: u.id,
       email,
       role,
       is_premium: email === OWNER_EMAIL,
       display_name: pickDisplayName(u),
       avatar_url: pickAvatar(u),
-      // ✅ New user ko 7 days trial
-      trial_ends_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     };
+
+    // Only set trial_ends_at for NEW users — never reset for existing
+    if (!existing) {
+      payload.trial_ends_at = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    }
 
     const { data, error } = await supabase
       .from("profiles")
