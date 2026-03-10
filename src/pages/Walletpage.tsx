@@ -1,115 +1,181 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
+import { Navigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { toast } from "sonner";
+import { IndianRupee, TrendingUp, Users, Clock, CheckCircle, XCircle, Wallet } from "lucide-react";
+import { formatCurrency } from "@/lib/currency";
 
-type Txn = {
+interface Payment {
   id: string;
-  razorpay_payment_id: string | null;
-  razorpay_order_id: string | null;
-  amount: number; // paise
-  currency: string | null;
-  status: string | null;
-  method: string | null;
-  description: string | null;
+  user_id: string;
+  plan: string;
+  amount: number;
+  status: string;
+  txn_id: string | null;
   created_at: string;
-};
-
-function formatINR(paise: number) {
-  const rupees = paise / 100;
-  return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(rupees);
+  profiles: { email: string; display_name: string | null } | null;
 }
 
+function StatCard({ label, value, icon: Icon, color }: { label: string; value: string; icon: any; color: string }) {
+  return (
+    <Card className="glass-card">
+      <CardContent className="flex items-center gap-4 pt-5 pb-4">
+        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-muted ${color}`}>
+          <Icon className="h-5 w-5" />
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">{label}</p>
+          <p className="text-lg font-bold">{value}</p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+const statusColor = (s: string) => {
+  if (s === "approved") return "bg-green-100 text-green-700 border-green-200";
+  if (s === "rejected") return "bg-red-100 text-red-700 border-red-200";
+  return "bg-yellow-100 text-yellow-700 border-yellow-200";
+};
+
+const planLabel = (plan: string) => {
+  if (plan === "yearly") return "Yearly · 365 days";
+  if (plan === "monthly") return "Monthly · 30 days";
+  return plan;
+};
+
 export default function WalletPage() {
-  const { profile } = useAuth();
+  const { isOwner } = useAuth();
+  const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
-  const [txns, setTxns] = useState<Txn[]>([]);
-
-  const load = async () => {
-    if (!profile) return;
-
-    setLoading(true);
-    const { data, error } = await supabase
-      .from("wallet_transactions")
-      .select("id, razorpay_payment_id, razorpay_order_id, amount, currency, status, method, description, created_at")
-      .eq("user_id", profile.id)
-      .order("created_at", { ascending: false });
-
-    if (error) toast.error(error.message);
-    setTxns((data as any) ?? []);
-    setLoading(false);
-  };
+  const [filter, setFilter] = useState<"all" | "approved" | "pending" | "rejected">("all");
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.id]);
+    if (!isOwner) return;
+    (async () => {
+      setLoading(true);
+      const { data } = await supabase
+        .from("purchase_requests")
+        .select("*, profiles(email, display_name)")
+        .order("created_at", { ascending: false });
+      setPayments((data ?? []) as any);
+      setLoading(false);
+    })();
+  }, [isOwner]);
 
-  const balancePaise = useMemo(() => {
-    const ok = new Set(["captured", "authorized", "paid", "success"]);
-    return txns.reduce(
-      (sum, t) => sum + (ok.has((t.status || "").toLowerCase()) ? (t.amount || 0) : 0),
-      0
-    );
-  }, [txns]);
+  if (!isOwner) return <Navigate to="/dashboard" replace />;
+
+  const approved = payments.filter(p => p.status === "approved");
+  const pending  = payments.filter(p => p.status === "pending");
+  const totalRevenue = approved.reduce((s, p) => s + (p.amount ?? 0), 0);
+  const filtered = filter === "all" ? payments : payments.filter(p => p.status === filter);
 
   return (
-    <div className="animate-fade-in space-y-6 max-w-3xl">
-      <div className="flex items-start justify-between gap-3">
+    <div className="animate-fade-in space-y-6">
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <Wallet className="h-7 w-7 text-primary" />
         <div>
           <h1 className="text-2xl font-display font-bold">Wallet</h1>
-          <p className="text-sm text-muted-foreground">Razorpay payments and credits will appear here.</p>
+          <p className="text-sm text-muted-foreground">All payments received from customers</p>
         </div>
-        <Button variant="outline" onClick={load} disabled={loading}>
-          {loading ? "Refreshing..." : "Refresh"}
-        </Button>
       </div>
 
-      <Card className="glass-card">
-        <CardHeader>
-          <CardTitle className="text-lg">Current Balance</CardTitle>
-        </CardHeader>
-        <CardContent className="flex items-center justify-between">
-          <div className="text-3xl font-bold">{formatINR(balancePaise)}</div>
-          <Badge variant="secondary">Auto-updated via webhook</Badge>
-        </CardContent>
-      </Card>
+      {/* Stat Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard label="Total Revenue" value={formatCurrency(totalRevenue, "INR")} icon={IndianRupee} color="text-green-600" />
+        <StatCard label="Total Payments" value={String(approved.length)} icon={CheckCircle} color="text-blue-600" />
+        <StatCard label="Pending" value={String(pending.length)} icon={Clock} color="text-yellow-600" />
+        <StatCard label="Total Customers" value={String(new Set(approved.map(p => p.user_id)).size)} icon={Users} color="text-purple-600" />
+      </div>
 
-      <Card className="glass-card">
-        <CardHeader>
-          <CardTitle className="text-lg">Transactions</CardTitle>
+      {/* Filter Tabs */}
+      <div className="flex gap-2 flex-wrap">
+        {(["all", "approved", "pending", "rejected"] as const).map(f => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`px-4 py-1.5 rounded-full text-xs font-medium border transition-all capitalize ${
+              filter === f
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-background text-muted-foreground border-border hover:border-primary/50"
+            }`}
+          >
+            {f} {f === "all" ? `(${payments.length})` : f === "approved" ? `(${approved.length})` : f === "pending" ? `(${pending.length})` : `(${payments.filter(p=>p.status==="rejected").length})`}
+          </button>
+        ))}
+      </div>
+
+      {/* Payments Table */}
+      <Card className="glass-card overflow-hidden">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Payment History</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="p-0">
           {loading ? (
-            <p className="text-sm text-muted-foreground">Loading...</p>
-          ) : txns.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No transactions yet.</p>
+            <div className="flex items-center justify-center h-32">
+              <div className="animate-spin w-6 h-6 border-4 border-primary border-t-transparent rounded-full" />
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-32 text-muted-foreground gap-2">
+              <Wallet className="h-8 w-8 opacity-30" />
+              <p className="text-sm">No payments found</p>
+            </div>
           ) : (
-            <div className="divide-y divide-border/60">
-              {txns.map((t) => (
-                <div key={t.id} className="py-3 flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="font-medium truncate">{t.description || "Razorpay Payment"}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {new Date(t.created_at).toLocaleString()}
-                      {t.method ? ` • ${t.method}` : ""}
-                      {t.razorpay_payment_id ? ` • ${t.razorpay_payment_id}` : ""}
-                    </p>
-                  </div>
-
-                  <div className="text-right shrink-0">
-                    <p className="font-semibold">{formatINR(t.amount || 0)}</p>
-                    <Badge
-                      variant={(t.status || "").toLowerCase() === "captured" ? "default" : "secondary"}
-                    >
-                      {t.status || "unknown"}
-                    </Badge>
-                  </div>
-                </div>
-              ))}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/40">
+                    <th className="px-4 py-3 text-left font-semibold text-muted-foreground text-xs">Customer</th>
+                    <th className="px-4 py-3 text-left font-semibold text-muted-foreground text-xs">Plan</th>
+                    <th className="px-4 py-3 text-right font-semibold text-muted-foreground text-xs">Amount</th>
+                    <th className="px-4 py-3 text-left font-semibold text-muted-foreground text-xs">Status</th>
+                    <th className="px-4 py-3 text-left font-semibold text-muted-foreground text-xs">TXN ID</th>
+                    <th className="px-4 py-3 text-left font-semibold text-muted-foreground text-xs">Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((p, i) => (
+                    <tr key={p.id} className={`border-b border-border/40 hover:bg-muted/20 transition-colors ${i % 2 === 0 ? "" : "bg-muted/10"}`}>
+                      <td className="px-4 py-3">
+                        <p className="font-medium text-xs">{(p.profiles as any)?.display_name || "—"}</p>
+                        <p className="text-[11px] text-muted-foreground">{(p.profiles as any)?.email || p.user_id.slice(0, 8) + "..."}</p>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">{planLabel(p.plan)}</td>
+                      <td className="px-4 py-3 text-right font-bold text-green-600">{formatCurrency(p.amount, "INR")}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border capitalize ${statusColor(p.status)}`}>
+                          {p.status === "approved" && <CheckCircle className="w-3 h-3" />}
+                          {p.status === "pending"  && <Clock className="w-3 h-3" />}
+                          {p.status === "rejected" && <XCircle className="w-3 h-3" />}
+                          {p.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-[11px] text-muted-foreground font-mono">
+                        {p.txn_id ? (
+                          <span title={p.txn_id}>{p.txn_id.slice(0, 16)}{p.txn_id.length > 16 ? "…" : ""}</span>
+                        ) : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-[11px] text-muted-foreground">
+                        {new Date(p.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+                        <br />
+                        <span className="text-[10px]">{new Date(p.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                {approved.length > 0 && (
+                  <tfoot>
+                    <tr className="bg-green-50 border-t-2 border-green-200">
+                      <td className="px-4 py-3 font-bold text-green-700 text-xs" colSpan={2}>Total Revenue</td>
+                      <td className="px-4 py-3 text-right font-bold text-green-700">{formatCurrency(totalRevenue, "INR")}</td>
+                      <td colSpan={3} />
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
             </div>
           )}
         </CardContent>
