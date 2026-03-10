@@ -56,11 +56,28 @@ export default function WalletPage() {
     if (!isOwner) return;
     (async () => {
       setLoading(true);
-      const { data } = await supabase
+      // Fetch payments
+      const { data: pData, error } = await supabase
         .from("purchase_requests")
-        .select("*, profiles(email, display_name)")
+        .select("*")
         .order("created_at", { ascending: false });
-      setPayments((data ?? []) as any);
+
+      if (error) console.error("[Wallet] fetch error:", error.message);
+      const raw = (pData ?? []) as any[];
+
+      // Fetch matching profiles separately
+      const userIds = [...new Set(raw.map((p: any) => p.user_id))];
+      let profileMap: Record<string, { email: string; display_name: string | null }> = {};
+      if (userIds.length > 0) {
+        const { data: pRows } = await supabase
+          .from("profiles")
+          .select("id, email, display_name")
+          .in("id", userIds);
+        (pRows ?? []).forEach((r: any) => { profileMap[r.id] = { email: r.email, display_name: r.display_name }; });
+      }
+
+      const merged = raw.map((p: any) => ({ ...p, profiles: profileMap[p.user_id] ?? null }));
+      setPayments(merged);
       setLoading(false);
     })();
   }, [isOwner]);
