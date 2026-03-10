@@ -56,10 +56,11 @@ export default function WalletPage() {
     if (!isOwner) return;
     (async () => {
       setLoading(true);
-      // Fetch payments
+      // Fetch only LIVE payments
       const { data: pData, error } = await supabase
         .from("purchase_requests")
         .select("*")
+        .eq("is_live", true)
         .order("created_at", { ascending: false });
 
       if (error) console.error("[Wallet] fetch error:", error.message);
