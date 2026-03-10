@@ -123,7 +123,7 @@ function PlanBanner() {
 }
 
 export default function DashboardHome() {
-  const { profile, isOwner, isPremium, userCurrency } = useAuth();
+  const { profile, isOwner, isPremium, userCurrency, isTrialExpired } = useAuth();
   const navigate = useNavigate();
 
   const [stats, setStats] = useState({ tables: 0, invoices: 0, pending: 0 });
@@ -307,6 +307,22 @@ export default function DashboardHome() {
       </div>
 
       <PlanBanner />
+
+      {/* Trial expired banner on dashboard home */}
+      {!isOwner && !isPremium && isTrialExpired && (
+        <div className="rounded-2xl bg-gradient-to-r from-indigo-600 to-purple-600 p-5 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg shadow-indigo-200">
+          <div className="text-white text-center sm:text-left">
+            <p className="font-bold text-base">🔒 Your Free Trial Has Ended</p>
+            <p className="text-indigo-100 text-xs mt-0.5">Upgrade to Premium to unlock Tables, Analytics, Documents & more. Your data is safe.</p>
+          </div>
+          <button
+            onClick={() => navigate("/dashboard/pricing")}
+            className="shrink-0 bg-white text-indigo-700 font-bold px-6 py-2.5 rounded-xl text-sm hover:bg-indigo-50 transition-all shadow hover:scale-105 active:scale-95 whitespace-nowrap"
+          >
+            ⭐ Upgrade to Premium
+          </button>
+        </div>
+      )}
 
       <Card className="glass-card">
         <CardContent className="py-3 flex items-center justify-between flex-wrap gap-3">
