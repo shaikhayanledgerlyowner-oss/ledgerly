@@ -75,13 +75,15 @@ export default function PricingPage() {
         if (error) {
           toast.error("Activation failed. Contact support with payment ID: " + response.razorpay_payment_id);
         } else {
-          // Save payment record
+          // Save payment record — only if live mode
+          const isLive = (import.meta.env.VITE_RAZORPAY_KEY_ID || "").startsWith("rzp_live_");
           await supabase.from("purchase_requests").insert({
             user_id: user.id,
             plan: plan.id,
             amount: plan.price,
             status: "approved",
             txn_id: response.razorpay_payment_id,
+            is_live: isLive,
           } as any);
 
           await refreshProfile();
