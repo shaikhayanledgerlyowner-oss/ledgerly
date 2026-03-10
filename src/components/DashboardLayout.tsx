@@ -46,19 +46,45 @@ const ALLOWED_EXPIRED = ["/dashboard", "/dashboard/pricing", "/dashboard/setting
 function TrialExpiredWall() {
   const navigate = useNavigate();
   return (
-    <div className="flex flex-col items-center justify-center min-h-[70vh] text-center px-6">
-      <div className="text-6xl mb-4">🔒</div>
-      <h2 className="text-2xl font-bold mb-2">Your Free Trial Has Ended</h2>
-      <p className="text-muted-foreground max-w-sm mb-6 text-sm leading-relaxed">
-        Your 7-day free trial is over. Upgrade to Premium to continue using Tables, Analytics, Documents and all features.
+    <div className="flex flex-col items-center justify-center min-h-[72vh] text-center px-6">
+      {/* Lock icon */}
+      <div className="w-20 h-20 rounded-full bg-gradient-to-br from-indigo-100 to-purple-100 flex items-center justify-center mb-6 shadow-inner">
+        <span className="text-4xl">🔒</span>
+      </div>
+
+      {/* Heading */}
+      <h2 className="text-2xl font-bold text-gray-900 mb-2">Your Free Trial Has Ended</h2>
+      <p className="text-muted-foreground text-sm max-w-md mb-8 leading-relaxed">
+        You've used your 7-day free trial. To continue managing your tables, tracking expenses,
+        generating invoices, and accessing analytics — upgrade to <strong>Ledgerly Premium</strong>.
+        Your data is safe and waiting for you.
       </p>
+
+      {/* Feature list */}
+      <div className="grid grid-cols-2 gap-2 text-xs text-left mb-8 max-w-sm w-full">
+        {[
+          "✅ Unlimited Tables & Rows",
+          "✅ Analytics & Charts",
+          "✅ Invoice & Document Generator",
+          "✅ PDF & Excel Export",
+          "✅ Style & Format Cells",
+          "✅ Priority Support",
+        ].map(f => (
+          <div key={f} className="bg-indigo-50 rounded-lg px-3 py-2 text-indigo-700 font-medium">{f}</div>
+        ))}
+      </div>
+
+      {/* CTA Button */}
       <button
         onClick={() => navigate("/dashboard/pricing")}
-        className="bg-primary text-primary-foreground font-semibold px-8 py-3 rounded-xl text-sm hover:opacity-90 transition-opacity shadow-lg"
+        className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-bold px-10 py-3.5 rounded-xl text-sm hover:from-indigo-700 hover:to-purple-700 transition-all shadow-lg shadow-indigo-200 hover:shadow-xl hover:scale-105 active:scale-95"
       >
-        ⭐ Upgrade to Premium
+        ⭐ Upgrade to Premium — Unlock Everything
       </button>
-      <p className="text-xs text-muted-foreground mt-4">You can still access Dashboard, Settings and Pricing.</p>
+
+      <p className="text-xs text-muted-foreground mt-4">
+        Dashboard, Settings &amp; Pricing page are still accessible.
+      </p>
     </div>
   );
 }
