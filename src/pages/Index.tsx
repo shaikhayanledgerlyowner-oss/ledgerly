@@ -464,12 +464,12 @@ export default function Index() {
             {/* FREE */}
             <div className="ld-price-card">
               <div className="ld-tier">Free Trial</div>
-              <div className="ld-amount">₹0 <span>/ forever</span></div>
+              <div className="ld-amount">₹0 <span>/ 7 days</span></div>
               <div className="ld-price-desc">Perfect to explore and get started.</div>
               <ul className="ld-price-list">
                 <li>Smart Ledger Tables</li>
                 <li>Basic Invoice creation</li>
-                <li>PDF export (5/month)</li>
+                <li>PDF export (7 days only)</li>
                 <li className="dim">Unlimited tables</li>
                 <li className="dim">Excel export</li>
                 <li className="dim">Priority support</li>
@@ -492,13 +492,13 @@ export default function Index() {
                 <li>Priority support</li>
                 <li className="dim">Multi-user access</li>
               </ul>
-              <a href="/auth" className="ld-btn-plan ld-btn-filled">Start Premium →</a>
+              <a href="/dashboard/pricing" className="ld-btn-plan ld-btn-filled">Start Premium →</a>
             </div>
             {/* BUSINESS */}
             <div className="ld-price-card" style={{borderColor:"var(--gold)", background:"linear-gradient(135deg,#fff 0%,#fdf8ee 100%)", position:"relative"}}>
               <div className="ld-popular-badge" style={{background:"var(--gold)"}}>For Teams</div>
               <div className="ld-tier" style={{color:"var(--gold)"}}>Business</div>
-              <div className="ld-amount">₹1,500 <span>/ month</span></div>
+              <div className="ld-amount">₹1,500 <span>/ year</span></div>
               <div className="ld-price-desc">For growing businesses & teams.</div>
               <ul className="ld-price-list">
                 <li>Everything in Premium</li>
