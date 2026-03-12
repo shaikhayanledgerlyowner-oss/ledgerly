@@ -304,7 +304,7 @@ export default function Index() {
           <li><a href="#features">Features</a></li>
           <li><a href="#pricing">Pricing</a></li>
         </ul>
-        <a href="/login" className="ld-nav-cta">Start Free →</a>
+        <a href="/auth" className="ld-nav-cta">Start Free →</a>
       </nav>
 
       {/* HERO */}
@@ -317,7 +317,7 @@ export default function Index() {
             <h1 className="ld-h1 fade-up d1">Your business,<br /><em>brilliantly</em><br />organised.</h1>
             <p className="ld-hero-sub fade-up d2">Smart ledger, professional invoices, quotations & PDF tools — everything your business needs, in one clean workspace.</p>
             <div className="ld-hero-actions fade-up d3">
-              <a href="/login" className="ld-btn-primary">Get Started Free</a>
+              <a href="/auth" className="ld-btn-primary">Get Started Free</a>
               <a href="#how" className="ld-btn-secondary">See how it works ↓</a>
             </div>
             <div className="ld-trust fade-up d4">
@@ -472,7 +472,7 @@ export default function Index() {
                 <li className="dim">Excel export</li>
                 <li className="dim">Priority support</li>
               </ul>
-              <a href="/login" className="ld-btn-plan ld-btn-outline">Get Started Free</a>
+              <a href="/auth" className="ld-btn-plan ld-btn-outline">Get Started Free</a>
             </div>
             <div className="ld-price-card popular">
               <div className="ld-popular-badge">Most Popular</div>
@@ -487,7 +487,7 @@ export default function Index() {
                 <li>Dashboard with charts</li>
                 <li>Priority support</li>
               </ul>
-              <a href="/login" className="ld-btn-plan ld-btn-filled">Start Premium →</a>
+              <a href="/auth" className="ld-btn-plan ld-btn-filled">Start Premium →</a>
             </div>
           </div>
         </div>
@@ -500,7 +500,7 @@ export default function Index() {
           <h2>Your business deserves<br />better tools.</h2>
           <p>Join small business owners who manage their accounts, invoices, and billing with Ledgerly — for free.</p>
           <div className="ld-cta-btns">
-            <a href="/login" className="ld-btn-cta-main">Start for Free →</a>
+            <a href="/auth" className="ld-btn-cta-main">Start for Free →</a>
             <a href="#features" className="ld-btn-cta-ghost">See Features</a>
           </div>
         </div>
