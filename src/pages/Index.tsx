@@ -223,8 +223,8 @@ export default function Index() {
 
         /* PRICING */
         .ld-pricing { padding: 6rem 3rem; }
-        .ld-pricing-inner { max-width: 900px; margin: 0 auto; text-align: center; }
-        .ld-price-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 3rem; text-align: left; }
+        .ld-pricing-inner { max-width: 1100px; margin: 0 auto; text-align: center; }
+        .ld-price-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5rem; margin-top: 3rem; text-align: left; }
         .ld-price-card { border: 1px solid var(--border); border-radius: 20px; padding: 2.5rem; background: #fff; transition: transform .25s, box-shadow .25s; }
         .ld-price-card:hover { transform: translateY(-4px); box-shadow: 0 16px 40px rgba(15,14,12,0.1); }
         .ld-price-card.popular { border-color: var(--sage); border-width: 2px; background: linear-gradient(135deg,#fff 0%,#f2f8f4 100%); position: relative; }
@@ -291,6 +291,7 @@ export default function Index() {
           .ld-mockup { display: none; }
           .ld-section, .ld-features, .ld-testi, .ld-pricing { padding: 4rem 1.5rem; }
           .ld-steps, .ld-feat-grid, .ld-testi-grid, .ld-price-grid { grid-template-columns: 1fr; }
+          .ld-price-card.popular { margin-top: 0; }
           .ld-cta { margin: 0 1.5rem 3rem; padding: 3.5rem 2rem; }
           .ld-footer { padding: 2rem 1.5rem; flex-direction: column; text-align: center; }
         }
@@ -460,6 +461,7 @@ export default function Index() {
           <h2 className="ld-section-title">Simple, honest pricing.</h2>
           <p className="ld-section-sub" style={{margin:"0 auto"}}>Start free. Upgrade when you're ready.</p>
           <div className="ld-price-grid">
+            {/* FREE */}
             <div className="ld-price-card">
               <div className="ld-tier">Free Trial</div>
               <div className="ld-amount">₹0 <span>/ forever</span></div>
@@ -471,9 +473,11 @@ export default function Index() {
                 <li className="dim">Unlimited tables</li>
                 <li className="dim">Excel export</li>
                 <li className="dim">Priority support</li>
+                <li className="dim">Multi-user access</li>
               </ul>
               <a href="/auth" className="ld-btn-plan ld-btn-outline">Get Started Free</a>
             </div>
+            {/* PREMIUM */}
             <div className="ld-price-card popular">
               <div className="ld-popular-badge">Most Popular</div>
               <div className="ld-tier green">Premium</div>
@@ -486,8 +490,26 @@ export default function Index() {
                 <li>Professional Invoices & Quotations</li>
                 <li>Dashboard with charts</li>
                 <li>Priority support</li>
+                <li className="dim">Multi-user access</li>
               </ul>
               <a href="/auth" className="ld-btn-plan ld-btn-filled">Start Premium →</a>
+            </div>
+            {/* BUSINESS */}
+            <div className="ld-price-card" style={{borderColor:"var(--gold)", background:"linear-gradient(135deg,#fff 0%,#fdf8ee 100%)", position:"relative"}}>
+              <div className="ld-popular-badge" style={{background:"var(--gold)"}}>For Teams</div>
+              <div className="ld-tier" style={{color:"var(--gold)"}}>Business</div>
+              <div className="ld-amount">₹1,500 <span>/ month</span></div>
+              <div className="ld-price-desc">For growing businesses & teams.</div>
+              <ul className="ld-price-list">
+                <li>Everything in Premium</li>
+                <li>Multi-user access (5 seats)</li>
+                <li>Team collaboration tools</li>
+                <li>Advanced analytics & reports</li>
+                <li>Custom branding on invoices</li>
+                <li>Dedicated account manager</li>
+                <li>24/7 priority support</li>
+              </ul>
+              <a href="/auth" className="ld-btn-plan" style={{background:"var(--gold)", color:"#fff", display:"block", textAlign:"center"}}>Get Business Plan →</a>
             </div>
           </div>
         </div>
