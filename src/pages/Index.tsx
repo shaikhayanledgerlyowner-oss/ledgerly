@@ -314,11 +314,11 @@ export default function Index() {
         <div className="ld-hero-grid" />
         <div className="ld-hero-inner">
           <div>
-            <div className="ld-tag fade-up">GST Invoice & Ledger for India</div>
+            <div className="ld-tag fade-up">For Small Businesses</div>
             <h1 className="ld-h1 fade-up d1">Your business,<br /><em>brilliantly</em><br />organised.</h1>
-            <p className="ld-hero-sub fade-up d2">Smart ledger, GST invoices, quotations & PDF tools — everything your small business needs, in one clean workspace. No accountant needed.</p>
+            <p className="ld-hero-sub fade-up d2">Smart ledger, professional invoices, quotations & PDF tools — everything your business needs, in one clean workspace.</p>
             <div className="ld-hero-actions fade-up d3">
-              <a href="/auth" className="ld-btn-primary">Get Started Free — 7 Days</a>
+              <a href="/auth" className="ld-btn-primary">Get Started Free</a>
               <a href="#how" className="ld-btn-secondary">See how it works ↓</a>
             </div>
             <div className="ld-trust fade-up d4">
@@ -336,7 +336,7 @@ export default function Index() {
                 <div className="ld-dot" style={{background:"#ff6058"}} />
                 <div className="ld-dot" style={{background:"#ffbd2e"}} />
                 <div className="ld-dot" style={{background:"#28c840"}} />
-                <div className="ld-url">app.ledgerly.in/dashboard</div>
+                <div className="ld-url">ledgerlypro.in/dashboard</div>
               </div>
               <div className="ld-mbody">
                 <div className="ld-mheader">
@@ -366,7 +366,7 @@ export default function Index() {
                 </table>
               </div>
             </div>
-            <div className="ld-float1">📄 GST Invoice exported!</div>
+            <div className="ld-float1">📄 PDF exported!</div>
             <div className="ld-float2">📊 EasyCount™</div>
           </div>
         </div>
@@ -392,7 +392,7 @@ export default function Index() {
             {[
               ["01","🔐","Create your account","Sign up for free in under 30 seconds. Your data stays private and secure — no one else can see it."],
               ["02","📋","Add your records","Create tables, log transactions, and manage entries just like Excel — but smarter, faster, and in the cloud."],
-              ["03","🚀","GST Invoice & export","Generate professional GST invoices, quotations, and bills in one click. Export to PDF or Excel instantly."],
+              ["03","🚀","Invoice & export","Generate professional invoices, quotations, and bills in one click. Export to PDF or Excel instantly."],
             ].map(([n,i,t,d]) => (
               <div key={t} className="ld-step">
                 <div className="ld-step-num">{n}</div>
@@ -410,12 +410,12 @@ export default function Index() {
         <div className="ld-features-inner">
           <div className="ld-section-tag" style={{color:"var(--sage-light)"}}>Features</div>
           <h2 className="ld-section-title" style={{color:"var(--paper)"}}>Everything your business<br />actually needs.</h2>
-          <p className="ld-section-sub" style={{color:"#9e9890"}}>Built specifically for Indian small businesses — GST ready, no bloat, no complexity.</p>
+          <p className="ld-section-sub" style={{color:"#9e9890"}}>Built specifically for Indian small businesses — no bloat, no complexity.</p>
           <div className="ld-feat-grid">
             {[
               ["📊","Smart Ledger Tables",<>Excel-like tables with <span className="ld-feat-hl">EasyCount™</span> formula support, custom styling, undo/redo, and bulk row/column management.</>],
-              ["🧾","GST Invoices & Quotations","Create branded GST invoices, quotations, and bills in seconds. Auto-calculate totals with tax, add your logo, and share directly with clients."],
-              ["📁","One-Click PDF Export","Export any table or document to a clean, professional PDF or Excel file. Perfect for sharing with accountants or filing GST records."],
+              ["🧾","Professional Invoices","Create branded invoices, quotations, and bills in seconds. Auto-calculate totals, add your logo, and share directly with clients."],
+              ["📁","One-Click PDF Export","Export any table or document to a clean, professional PDF or Excel file. Perfect for sharing with accountants or filing records."],
               ["📈","Dashboard Overview","See your revenue, expenses, and net balance at a glance. Visual charts and quick summaries keep you always in control."],
               ["🔒","Private & Secure","Your financial data is encrypted and visible only to you. We don't sell your data, ever. Built with enterprise-grade security."],
               ["⚡","Fast & Mobile-Ready","Works seamlessly on mobile, tablet, and desktop. Lightning-fast loading — manage your business from anywhere, anytime."],
@@ -437,8 +437,8 @@ export default function Index() {
           <h2 className="ld-section-title">Loved by business<br />owners like you.</h2>
           <div className="ld-testi-grid">
             {[
-              ["RK","Ramesh Kumar","Medical Diagnostics, Pune","Pehle Excel mein sab kuch manually karta tha. Ab Ledgerly se GST invoices aur tables dono ek jagah ho jaate hain. Time bahut bachta hai!"],
-              ["SP","Sneha Patel","Freelance Designer, Ahmedabad","The PDF export feature is a game changer. I send professional-looking GST bills to clients now and they're always impressed."],
+              ["RK","Ramesh Kumar","Medical Diagnostics, Pune","Pehle Excel mein sab kuch manually karta tha. Ab Ledgerly se invoices aur tables dono ek jagah ho jaate hain. Time bahut bachta hai!"],
+              ["SP","Sneha Patel","Freelance Designer, Ahmedabad","The PDF export feature is a game changer. I send professional-looking bills to clients now and they're always impressed."],
               ["AJ","Arjun Joshi","Wholesale Trader, Mumbai","EasyCount formula support is incredible. I track daily cash and online payments separately — exactly what my shop needed."],
             ].map(([av,name,role,text]) => (
               <div key={name as string} className="ld-testi-card">
@@ -459,7 +459,7 @@ export default function Index() {
         <div className="ld-pricing-inner">
           <div className="ld-section-tag">Pricing</div>
           <h2 className="ld-section-title">Simple, honest pricing.</h2>
-          <p className="ld-section-sub" style={{margin:"0 auto"}}>Start free for 7 days. Upgrade when you're ready.</p>
+          <p className="ld-section-sub" style={{margin:"0 auto"}}>Start free. Upgrade when you're ready.</p>
           <div className="ld-price-grid">
             {/* FREE */}
             <div className="ld-price-card">
@@ -468,7 +468,7 @@ export default function Index() {
               <div className="ld-price-desc">Perfect to explore and get started.</div>
               <ul className="ld-price-list">
                 <li>Smart Ledger Tables</li>
-                <li>Basic GST Invoice creation</li>
+                <li>Basic Invoice creation</li>
                 <li>PDF export (7 days only)</li>
                 <li className="dim">Unlimited tables</li>
                 <li className="dim">Excel export</li>
@@ -487,7 +487,7 @@ export default function Index() {
                 <li>Everything in Free</li>
                 <li>Unlimited tables & records</li>
                 <li>Unlimited PDF & Excel export</li>
-                <li>Professional GST Invoices & Quotations</li>
+                <li>Professional Invoices & Quotations</li>
                 <li>Dashboard with charts</li>
                 <li>Priority support</li>
                 <li className="dim">Multi-user access</li>
@@ -520,9 +520,9 @@ export default function Index() {
         <div className="ld-cta-inner">
           <div className="ld-section-tag" style={{color:"var(--sage-light)"}}>Get started today</div>
           <h2>Your business deserves<br />better tools.</h2>
-          <p>Join small business owners who manage their accounts, GST invoices, and billing with Ledgerly — for free.</p>
+          <p>Join small business owners who manage their accounts, invoices, and billing with Ledgerly — for free.</p>
           <div className="ld-cta-btns">
-            <a href="/auth" className="ld-btn-cta-main">Start Free for 7 Days →</a>
+            <a href="/auth" className="ld-btn-cta-main">Start for Free →</a>
             <a href="#features" className="ld-btn-cta-ghost">See Features</a>
           </div>
         </div>
@@ -537,7 +537,7 @@ export default function Index() {
           <a href="#">Support</a>
           <a href="#">Contact</a>
         </div>
-        <div className="ld-footer-copy">© 2025 Ledgerly. Made with ♥ for small businesses in India.</div>
+        <div className="ld-footer-copy">© 2025 Ledgerly. Made with ♥ for small businesses.</div>
       </footer>
     </>
   );
