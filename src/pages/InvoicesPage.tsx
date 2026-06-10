@@ -228,7 +228,7 @@ export default function InvoicesPage() {
         bill: [124, 45, 18],
       };
       pdf.setFillColor(...headerColors[type]);
-      pdf.rect(0, 0, pageW, 68, "F");
+      pdf.rect(0, 0, pageW, 90, "F");
 
       // Left accent
       const accentColors: Record<DocType, [number,number,number]> = {
@@ -237,32 +237,40 @@ export default function InvoicesPage() {
         bill: [249, 115, 22],
       };
       pdf.setFillColor(...accentColors[type]);
-      pdf.rect(0, 0, 5, 68, "F");
+      pdf.rect(0, 0, 6, 90, "F");
 
       // Logo
       if (logoDataUrl) {
         const isPng = logoDataUrl.startsWith("data:image/png");
-        pdf.addImage(logoDataUrl, isPng ? "PNG" : "JPEG" as any, 16, 10, 48, 48);
+        pdf.addImage(logoDataUrl, isPng ? "PNG" : "JPEG" as any, 18, 14, 62, 62);
       }
 
-      const leftX = logoDataUrl ? 76 : 20;
+      const leftX = logoDataUrl ? 96 : 22;
       const bName = String(branding?.business_name || "Your Business");
       pdf.setTextColor(255, 255, 255);
-      pdf.setFont("helvetica", "bold"); pdf.setFontSize(15);
-      pdf.text(bName, leftX, 30);
-      pdf.setFont("helvetica", "normal"); pdf.setFontSize(8.5); pdf.setTextColor(148, 163, 184);
-      const bInfo = [branding?.address, branding?.phone ? `Ph: ${branding.phone}` : "", branding?.gstin ? `GSTIN: ${branding.gstin}` : ""].filter(Boolean).join("  ·  ");
-      if (bInfo) pdf.text(bInfo, leftX, 44);
+      pdf.setFont("helvetica", "bold"); pdf.setFontSize(20);
+      pdf.text(bName, leftX, 38);
+
+      pdf.setFont("helvetica", "normal"); pdf.setFontSize(8.5); pdf.setTextColor(180, 195, 210);
+      const bInfo = [
+        branding?.address,
+        branding?.phone ? `Ph: ${branding.phone}` : "",
+        branding?.gstin ? `GSTIN: ${branding.gstin}` : "",
+      ].filter(Boolean).join("   |   ");
+      if (bInfo) {
+        const bInfoLines = pdf.splitTextToSize(bInfo, pageW / 2 - leftX - 10);
+        pdf.text(bInfoLines, leftX, 54);
+      }
 
       // Document title (right)
       pdf.setTextColor(255, 255, 255);
-      pdf.setFont("helvetica", "bold"); pdf.setFontSize(22);
-      pdf.text(title, pageW - 20, 32, { align: "right" });
-      pdf.setFont("helvetica", "normal"); pdf.setFontSize(9); pdf.setTextColor(148, 163, 184);
-      pdf.text(`No: ${docNo}`, pageW - 20, 46, { align: "right" });
-      pdf.text(`Date: ${createdAt.toLocaleDateString("en-IN")}`, pageW - 20, 58, { align: "right" });
+      pdf.setFont("helvetica", "bold"); pdf.setFontSize(28);
+      pdf.text(title, pageW - 22, 42, { align: "right" });
+      pdf.setFont("helvetica", "normal"); pdf.setFontSize(9.5); pdf.setTextColor(180, 195, 210);
+      pdf.text(`No: ${docNo}`, pageW - 22, 60, { align: "right" });
+      pdf.text(`Date: ${createdAt.toLocaleDateString("en-IN")}`, pageW - 22, 74, { align: "right" });
 
-      let y = 90;
+      let y = 108;
 
       // ── Intro note ──
       const note = (totals.note?.trim() ? totals.note : introText(type)) || "";
@@ -301,15 +309,16 @@ export default function InvoicesPage() {
           moneyPDF(Number(it.rate || 0), currency),
           moneyPDF(Number(it.amount || 0), currency),
         ]),
-        styles: { font: "helvetica", fontSize: 9, cellPadding: 7, lineColor: [226, 232, 240], lineWidth: 0.5 },
-        headStyles: { fillColor: headerColors[type], textColor: 255, fontStyle: "bold", fontSize: 9 },
+        styles: { font: "helvetica", fontSize: 9.5, cellPadding: 8, lineColor: [226, 232, 240], lineWidth: 0.5, valign: "middle" },
+        headStyles: { fillColor: headerColors[type], textColor: 255, fontStyle: "bold", fontSize: 9.5, halign: "center", cellPadding: 9 },
         alternateRowStyles: { fillColor: [248, 250, 252] },
         columnStyles: {
-          0: { cellWidth: 30, halign: "center", fontStyle: "bold" },
-          2: { cellWidth: 72, halign: "center" },
-          3: { cellWidth: 40, halign: "center" },
-          4: { cellWidth: 90, halign: "right" },
-          5: { cellWidth: 100, halign: "right", fontStyle: "bold" },
+          0: { cellWidth: 34, halign: "center", fontStyle: "bold" },
+          1: { halign: "left" },
+          2: { cellWidth: 80, halign: "center" },
+          3: { cellWidth: 44, halign: "center" },
+          4: { cellWidth: 100, halign: "center" },
+          5: { cellWidth: 110, halign: "center", fontStyle: "bold" },
         },
         margin: { left: 40, right: 40 },
       });
