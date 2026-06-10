@@ -300,7 +300,7 @@ export default function InvoicesPage() {
       // ── Items table ──
       autoTable(pdf, {
         startY: y,
-        head: [["#", "Description", "HSN/SAC", "Qty", "Rate", "Amount"]],
+        head: [["No.", "Description", "HSN/SAC", "Qty", "Rate", "Amount"]],
         body: items.map((it, i) => [
           String(i + 1),
           String(it.description || ""),
