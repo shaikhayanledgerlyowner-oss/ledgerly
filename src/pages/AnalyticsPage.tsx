@@ -280,8 +280,8 @@ export default function AnalyticsPage() {
     doc.roundedRect(32 + chartW, y, chartW, chartH + 24, 6, 6, "FD");
 
     doc.setTextColor(15, 23, 42); doc.setFont("helvetica", "bold"); doc.setFontSize(9);
-    doc.text("📊  Bar Chart — " + (pd.amtCols[0]?.name || "Amount"), 32, y + 13);
-    doc.text("🥧  Distribution — Pie Chart", 40 + chartW, y + 13);
+    doc.text("Bar Chart  —  " + (pd.amtCols[0]?.name || "Amount"), 32, y + 13);
+    doc.text("Distribution  —  Pie Chart", 40 + chartW, y + 13);
 
     doc.addImage(barImg, "PNG", 26, y + 18, chartW - 4, chartH);
     doc.addImage(pieImg, "PNG", 34 + chartW, y + 18, chartW - 4, chartH);
