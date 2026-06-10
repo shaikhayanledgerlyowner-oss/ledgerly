@@ -1,610 +1,562 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
+import {
+  BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, ComposedChart,
+} from "recharts";
+import {
+  TrendingUp, IndianRupee, Download, Table2,
+  BarChart2, PieChart as PieIcon, LayoutDashboard,
+  ArrowUpRight, ArrowDownRight, Minus,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
-} from "@/components/ui/dialog";
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import { Plus, Download, Trash2, FileText, Pencil, Receipt, FileCheck, FileMinus } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
+import { formatCurrency, formatCurrencyPDF, getCurrencySymbol } from "@/lib/currency";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-type DocType = "invoice" | "quotation" | "bill";
+interface DbTable  { id: string; name: string; }
+interface DbColumn { id: string; table_id: string; name: string; type: string; }
+interface DbRow    { id: string; table_id: string; row_data: Record<string, any>; created_at: string; }
 
-interface InvoiceItem {
-  description: string; hsn: string; qty: number; rate: number; amount: number;
-}
-interface Totals {
-  subtotal: number; tax_percent: number; tax_amount: number; total: number; terms: string; note: string;
-}
-interface InvoiceData {
-  id?: string; type: DocType; doc_no: string; customer_name: string;
-  customer_address: string; customer_phone: string;
-  items: InvoiceItem[]; totals: Totals; currency_code: string; created_at?: string;
-}
+const COLORS = ["#3b82f6","#22c55e","#f59e0b","#ef4444","#a855f7","#06b6d4","#f97316","#ec4899","#84cc16","#14b8a6"];
+const toNum = (v: any) => { if (v == null || v === "") return 0; const n = Number(String(v).replace(/,/g, "")); return isFinite(n) ? n : 0; };
+function toDMY(iso: string) { if (!iso) return ""; const d = new Date(iso + "T00:00:00"); if (isNaN(d.getTime())) return iso; return `${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}/${d.getFullYear()}`; }
+type ChartMode = "bar" | "line" | "pie" | "composed";
 
-const DEFAULT_TERMS = `1. Goods/Services once sold/provided will not be taken back.
-2. Payment is due within 7 days from the document date.
-3. Please verify all details before making payment.
-4. This is a computer generated document and does not require signature.
-5. Subject to local jurisdiction.`;
-
-const DEFAULT_NOTE = `Dear Sir / Madam,\nThank you for your business. Please find the document details below.`;
-
-function safeFileName(name: string) {
-  return (String(name || "document").replace(/[\/\\:*?"<>|]/g, "-").trim() || "document");
-}
-function docTitle(type: DocType) {
-  return type === "invoice" ? "INVOICE" : type === "quotation" ? "QUOTATION" : "BILL";
-}
-function introText(type: DocType) {
-  if (type === "quotation") return "Dear Sir / Madam,\nWe are pleased to submit the following quotation for your consideration.";
-  if (type === "bill") return "Dear Sir / Madam,\nThank you. Please find the bill details below.";
-  return "Dear Sir / Madam,\nThank you for your business. Please find the invoice details below.";
-}
-function formatNumber(n: number) {
-  return new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n || 0));
-}
-function moneyPDF(amount: number, currency: string) {
-  const num = formatNumber(amount);
-  if ((currency || "INR").toUpperCase() === "INR") return `Rs. ${num}`;
-  const map: Record<string, string> = { USD: "$", EUR: "€", GBP: "£" };
-  return `${map[(currency || "").toUpperCase()] || currency || ""}${num}`;
-}
-function moneyUI(n: number, code: string) {
-  const c = (code || "INR").toUpperCase();
-  if (c === "INR") return `₹${formatNumber(n)}`;
-  const map: Record<string, string> = { USD: "$", EUR: "€", GBP: "£" };
-  return `${map[c] || c}${formatNumber(n)}`;
-}
-async function urlToDataURL(url: string): Promise<string | null> {
-  try {
-    const res = await fetch(url, { mode: "cors" });
-    const blob = await res.blob();
-    return await new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(String(reader.result));
-      reader.readAsDataURL(blob);
-    });
-  } catch { return null; }
-}
-
-const DOC_ICONS: Record<DocType, React.ReactNode> = {
-  invoice: <Receipt className="w-4 h-4" />,
-  quotation: <FileCheck className="w-4 h-4" />,
-  bill: <FileMinus className="w-4 h-4" />,
-};
-const DOC_COLORS: Record<DocType, string> = {
-  invoice: "bg-blue-50 text-blue-700 border-blue-100",
-  quotation: "bg-emerald-50 text-emerald-700 border-emerald-100",
-  bill: "bg-orange-50 text-orange-700 border-orange-100",
+const CustomTooltip = ({ active, payload, label, cur }: any) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-white border border-gray-100 rounded-2xl shadow-2xl p-4 text-xs min-w-[160px]">
+      <p className="font-bold text-gray-800 mb-2 pb-2 border-b border-gray-100">{label}</p>
+      {payload.map((p: any, i: number) => (
+        <div key={i} className="flex items-center justify-between gap-4 py-1">
+          <span className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: p.color }} />
+            <span className="text-gray-500">{p.name}</span>
+          </span>
+          <span className="font-bold text-gray-900">{formatCurrency(p.value, cur)}</span>
+        </div>
+      ))}
+    </div>
+  );
 };
 
-const EMPTY_FORM: InvoiceData = {
-  type: "invoice", doc_no: "", customer_name: "", customer_address: "", customer_phone: "",
-  items: [{ description: "", hsn: "", qty: 1, rate: 0, amount: 0 }],
-  totals: { subtotal: 0, tax_percent: 0, tax_amount: 0, total: 0, terms: DEFAULT_TERMS, note: DEFAULT_NOTE },
-  currency_code: "INR",
-};
+// ── Canvas chart renderers for PDF ──────────────────────────────────────────
+function drawBarChart(canvas: HTMLCanvasElement, chartRows: Record<string,any>[], amtCol: string, cur: string) {
+  const ctx = canvas.getContext("2d")!;
+  const W = canvas.width, H = canvas.height;
+  const pad = { top: 30, right: 30, bottom: 60, left: 80 };
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
 
-export default function InvoicesPage() {
-  const { profile, isPremium, hasAccess } = useAuth();
-  const [docs, setDocs] = useState<any[]>([]);
-  const [showCreate, setShowCreate] = useState(false);
-  const [showEdit, setShowEdit] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [branding, setBranding] = useState<any>(null);
-  const [form, setForm] = useState<InvoiceData>(EMPTY_FORM);
+  const vals = chartRows.map(r => toNum(r[amtCol]));
+  const maxV = Math.max(...vals, 1);
+  const chartH = H - pad.top - pad.bottom;
+  const chartW = W - pad.left - pad.right;
+  const barW = Math.min(44, chartW / chartRows.length - 8);
 
-  const refresh = async () => {
-    if (!profile) return;
-    const { data, error } = await supabase.from("invoices").select("*").eq("user_id", profile.id).order("created_at", { ascending: false });
-    if (error) { toast.error(error.message); return; }
-    setDocs(data ?? []);
-  };
+  // Y grid lines
+  [0, 0.25, 0.5, 0.75, 1].forEach(f => {
+    const y = pad.top + chartH * (1 - f);
+    ctx.strokeStyle = f === 0 ? "#e5e7eb" : "#f3f4f6";
+    ctx.lineWidth = f === 0 ? 1.5 : 1;
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    ctx.fillStyle = "#9ca3af"; ctx.font = "10px Arial"; ctx.textAlign = "right";
+    ctx.fillText(formatCurrencyPDF(maxV * f, cur).replace(/\.00$/, ""), pad.left - 8, y + 4);
+  });
+
+  // Bars with gradient
+  chartRows.forEach((r, i) => {
+    const x = pad.left + i * (chartW / chartRows.length) + (chartW / chartRows.length - barW) / 2;
+    const barH = (toNum(r[amtCol]) / maxV) * chartH;
+    const y = pad.top + chartH - barH;
+    const grad = ctx.createLinearGradient(x, y, x, y + barH);
+    grad.addColorStop(0, "#3b82f6");
+    grad.addColorStop(1, "#1d4ed8");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    if (typeof (ctx as any).roundRect === "function") { (ctx as any).roundRect(x, y, barW, barH, 4); } else { ctx.rect(x, y, barW, barH); }
+    ctx.fill();
+    // value on top
+    ctx.fillStyle = "#374151"; ctx.font = "bold 9px Arial"; ctx.textAlign = "center";
+    if (barH > 16) ctx.fillText(formatCurrencyPDF(toNum(r[amtCol]), cur).replace(/\.00$/, ""), x + barW / 2, y - 5);
+    // x label
+    ctx.fillStyle = "#6b7280"; ctx.font = "9px Arial";
+    ctx.fillText(String(r.name).slice(0, 10), x + barW / 2, H - pad.bottom + 16);
+  });
+}
+
+function drawPieChart(canvas: HTMLCanvasElement, chartRows: Record<string,any>[], amtCol: string) {
+  const ctx = canvas.getContext("2d")!;
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+
+  const data = chartRows.map(r => ({ name: String(r.name), value: toNum(r[amtCol]) })).filter(d => d.value > 0);
+  const total = data.reduce((s, d) => s + d.value, 0);
+  const cx = W * 0.36, cy = H / 2, r = Math.min(W, H) * 0.33, innerR = r * 0.45;
+
+  let startAngle = -Math.PI / 2;
+  data.forEach((d, i) => {
+    const slice = (d.value / total) * 2 * Math.PI;
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, r, startAngle, startAngle + slice);
+    ctx.closePath(); ctx.fillStyle = COLORS[i % COLORS.length]; ctx.fill();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5; ctx.stroke();
+    startAngle += slice;
+  });
+
+  // Donut hole
+  ctx.beginPath(); ctx.arc(cx, cy, innerR, 0, 2 * Math.PI);
+  ctx.fillStyle = "#fff"; ctx.fill();
+
+  // Center label
+  ctx.fillStyle = "#374151"; ctx.font = "bold 11px Arial"; ctx.textAlign = "center";
+  ctx.fillText("Total", cx, cy - 4);
+  ctx.font = "bold 10px Arial"; ctx.fillStyle = "#111827";
+  ctx.fillText(String(data.length) + " items", cx, cy + 12);
+
+  // Legend
+  const legendX = W * 0.68, legendY = H * 0.1;
+  data.slice(0, 9).forEach((d, i) => {
+    const y = legendY + i * 20;
+    ctx.fillStyle = COLORS[i % COLORS.length];
+    ctx.beginPath(); if (typeof (ctx as any).roundRect === "function") { (ctx as any).roundRect(legendX, y, 12, 12, 2); } else { ctx.rect(legendX, y, 12, 12); } ctx.fill();
+    ctx.fillStyle = "#374151"; ctx.font = "9px Arial"; ctx.textAlign = "left";
+    const pct = ((d.value / total) * 100).toFixed(1);
+    ctx.fillText(`${String(d.name).slice(0, 14)}  ${pct}%`, legendX + 16, y + 10);
+  });
+}
+
+export default function AnalyticsPage() {
+  const { profile, hasAccess, userCurrency } = useAuth();
+  const uid = profile?.id;
+  const cur = userCurrency || "INR";
+
+  const [tables, setTables] = useState<DbTable[]>([]);
+  const [columns, setColumns] = useState<DbColumn[]>([]);
+  const [rows, setRows] = useState<DbRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [xAxisMap, setXAxisMap] = useState<Record<string, string>>({});
+  const [chartMode, setChartMode] = useState<ChartMode>("bar");
+  const [activeTable, setActiveTable] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!profile) return;
-    refresh();
-    supabase.from("user_branding").select("*").eq("user_id", profile.id).single().then(({ data }) => setBranding(data));
-  }, [profile?.id]);
-
-  const recalcTotals = (items: InvoiceItem[], taxPercent: number) => {
-    const subtotal = items.reduce((s, i) => s + Number(i.amount || 0), 0);
-    const tax_amount = subtotal * (Number(taxPercent || 0) / 100);
-    const total = subtotal + tax_amount;
-    setForm(prev => ({ ...prev, items, totals: { ...prev.totals, subtotal, tax_percent: Number(taxPercent || 0), tax_amount, total } }));
-  };
-
-  const updateItem = (idx: number, field: keyof InvoiceItem, value: string | number) => {
-    const items = [...form.items];
-    (items[idx] as any)[field] = value;
-    if (field === "qty" || field === "rate") {
-      items[idx].amount = Number(items[idx].qty || 0) * Number(items[idx].rate || 0);
-    }
-    recalcTotals(items, form.totals.tax_percent);
-  };
-
-  const addItem = () => recalcTotals([...form.items, { description: "", hsn: "", qty: 1, rate: 0, amount: 0 }], form.totals.tax_percent);
-  const removeItem = (idx: number) => {
-    const items = form.items.filter((_, i) => i !== idx);
-    recalcTotals(items.length ? items : [{ description: "", hsn: "", qty: 1, rate: 0, amount: 0 }], form.totals.tax_percent);
-  };
-
-  const save = async () => {
-    if (!profile) return;
-    if (!form.doc_no.trim()) return toast.error("Document No. required");
-    if (!form.customer_name.trim()) return toast.error("Customer name required");
-    const { error } = await supabase.from("invoices").insert({
-      user_id: profile.id, type: form.type, doc_no: form.doc_no.trim(),
-      customer_name: form.customer_name.trim(), customer_address: form.customer_address || "",
-      customer_phone: form.customer_phone || "", items: form.items as any, totals: form.totals as any,
-      currency_code: form.currency_code,
-    } as any);
-    if (error) return toast.error(error.message);
-    toast.success("Document saved!");
-    setShowCreate(false); setForm(EMPTY_FORM); refresh();
-  };
-
-  const openEdit = (d: any) => {
-    setEditingId(d.id);
-    setForm({
-      type: (d.type || "invoice") as DocType, doc_no: d.doc_no || "",
-      customer_name: d.customer_name || "", customer_address: d.customer_address || "",
-      customer_phone: d.customer_phone || "",
-      items: (d.items as InvoiceItem[]) || [{ description: "", hsn: "", qty: 1, rate: 0, amount: 0 }],
-      totals: {
-        subtotal: Number(d.totals?.subtotal || 0), tax_percent: Number(d.totals?.tax_percent || 0),
-        tax_amount: Number(d.totals?.tax_amount || 0), total: Number(d.totals?.total || 0),
-        terms: d.totals?.terms || DEFAULT_TERMS, note: d.totals?.note || DEFAULT_NOTE,
-      },
-      currency_code: d.currency_code || "INR",
-    });
-    setShowEdit(true);
-  };
-
-  const saveEdit = async () => {
-    if (!editingId) return;
-    if (!form.doc_no.trim()) return toast.error("Document No. required");
-    if (!form.customer_name.trim()) return toast.error("Customer name required");
-    const { error } = await supabase.from("invoices").update({
-      type: form.type, doc_no: form.doc_no.trim(), customer_name: form.customer_name.trim(),
-      customer_address: form.customer_address || "", customer_phone: form.customer_phone || "",
-      items: form.items as any, totals: form.totals as any, currency_code: form.currency_code,
-    } as any).eq("id", editingId);
-    if (error) return toast.error(error.message);
-    toast.success("Document updated!"); setShowEdit(false); setEditingId(null); refresh();
-  };
-
-  const deleteDoc = async (id: string) => {
-    const { error } = await supabase.from("invoices").delete().eq("id", id);
-    if (error) return toast.error(error.message);
-    setDocs(prev => prev.filter(d => d.id !== id));
-    toast.success("Deleted");
-  };
-
-  const downloadPDF = async (doc: any) => {
-    if (!hasAccess) { toast.error("Upgrade to download documents"); return; }
-    try {
-      const type: DocType = (doc.type || "invoice") as DocType;
-      const title = docTitle(type);
-      const items: InvoiceItem[] = (doc.items as any[])?.map(it => ({
-        description: String(it.description ?? ""), hsn: String(it.hsn ?? ""),
-        qty: Number(it.qty ?? 0), rate: Number(it.rate ?? 0), amount: Number(it.amount ?? 0),
-      })) || [];
-      const totals: Totals = {
-        subtotal: Number(doc.totals?.subtotal ?? 0), tax_percent: Number(doc.totals?.tax_percent ?? 0),
-        tax_amount: Number(doc.totals?.tax_amount ?? 0), total: Number(doc.totals?.total ?? 0),
-        terms: String(doc.totals?.terms ?? DEFAULT_TERMS), note: String(doc.totals?.note ?? introText(type)),
-      };
-      const docNo = String(doc.doc_no || "-");
-      const createdAt = doc.created_at ? new Date(doc.created_at) : new Date();
-      const currency = String(doc.currency_code || "INR").toUpperCase();
-
-      const pdf = new jsPDF({ orientation: "p", unit: "pt", format: "a4" });
-      const pageW = pdf.internal.pageSize.getWidth();
-      const pageH = pdf.internal.pageSize.getHeight();
-
-      let logoDataUrl: string | null = null;
-      const logoUrl = branding?.logo_url || branding?.logo || branding?.business_logo_url || branding?.business_logo;
-      if (logoUrl) logoDataUrl = await urlToDataURL(logoUrl);
-
-      // ── Header ──
-      // Top color band based on type
-      const headerColors: Record<DocType, [number,number,number]> = {
-        invoice: [15, 23, 42],
-        quotation: [5, 78, 49],
-        bill: [124, 45, 18],
-      };
-      pdf.setFillColor(...headerColors[type]);
-      pdf.rect(0, 0, pageW, 68, "F");
-
-      // Left accent
-      const accentColors: Record<DocType, [number,number,number]> = {
-        invoice: [59, 130, 246],
-        quotation: [34, 197, 94],
-        bill: [249, 115, 22],
-      };
-      pdf.setFillColor(...accentColors[type]);
-      pdf.rect(0, 0, 5, 68, "F");
-
-      // Logo
-      if (logoDataUrl) {
-        const isPng = logoDataUrl.startsWith("data:image/png");
-        pdf.addImage(logoDataUrl, isPng ? "PNG" : "JPEG" as any, 16, 10, 48, 48);
-      }
-
-      const leftX = logoDataUrl ? 76 : 20;
-      const bName = String(branding?.business_name || "Your Business");
-      pdf.setTextColor(255, 255, 255);
-      pdf.setFont("helvetica", "bold"); pdf.setFontSize(15);
-      pdf.text(bName, leftX, 30);
-      pdf.setFont("helvetica", "normal"); pdf.setFontSize(8.5); pdf.setTextColor(148, 163, 184);
-      const bInfo = [branding?.address, branding?.phone ? `Ph: ${branding.phone}` : "", branding?.gstin ? `GSTIN: ${branding.gstin}` : ""].filter(Boolean).join("  ·  ");
-      if (bInfo) pdf.text(bInfo, leftX, 44);
-
-      // Document title (right)
-      pdf.setTextColor(255, 255, 255);
-      pdf.setFont("helvetica", "bold"); pdf.setFontSize(22);
-      pdf.text(title, pageW - 20, 32, { align: "right" });
-      pdf.setFont("helvetica", "normal"); pdf.setFontSize(9); pdf.setTextColor(148, 163, 184);
-      pdf.text(`No: ${docNo}`, pageW - 20, 46, { align: "right" });
-      pdf.text(`Date: ${createdAt.toLocaleDateString("en-IN")}`, pageW - 20, 58, { align: "right" });
-
-      let y = 90;
-
-      // ── Intro note ──
-      const note = (totals.note?.trim() ? totals.note : introText(type)) || "";
-      pdf.setTextColor(71, 85, 105); pdf.setFont("helvetica", "italic"); pdf.setFontSize(9);
-      const noteLines = pdf.splitTextToSize(note, pageW - 80);
-      pdf.text(noteLines, 40, y); y += noteLines.length * 12 + 10;
-
-      // ── Bill To box ──
-      pdf.setFillColor(248, 250, 252); pdf.setDrawColor(226, 232, 240);
-      const customerLines = [
-        doc.customer_name || "",
-        doc.customer_address || "",
-        doc.customer_phone ? `Phone: ${doc.customer_phone}` : "",
-      ].filter(x => String(x).trim().length > 0);
-      const allCLines: string[] = [];
-      for (const l of customerLines) { allCLines.push(...pdf.splitTextToSize(String(l), pageW / 2 - 60)); }
-      const boxH = 22 + allCLines.length * 12 + 14;
-      pdf.roundedRect(40, y, pageW / 2 - 20, boxH, 6, 6, "FD");
-      pdf.setFillColor(...accentColors[type]);
-      pdf.roundedRect(40, y, pageW / 2 - 20, 4, 2, 2, "F");
-      pdf.setTextColor(15, 23, 42); pdf.setFont("helvetica", "bold"); pdf.setFontSize(9);
-      pdf.text("BILL TO", 52, y + 16);
-      pdf.setFont("helvetica", "normal"); pdf.setFontSize(9.5); pdf.setTextColor(30, 41, 59);
-      allCLines.forEach((l, i) => pdf.text(l, 52, y + 28 + i * 12));
-      y += boxH + 18;
-
-      // ── Items table ──
-      autoTable(pdf, {
-        startY: y,
-        head: [["#", "Description", "HSN/SAC", "Qty", "Rate", "Amount"]],
-        body: items.map((it, i) => [
-          String(i + 1),
-          String(it.description || ""),
-          String(it.hsn || "—"),
-          String(Number(it.qty || 0)),
-          moneyPDF(Number(it.rate || 0), currency),
-          moneyPDF(Number(it.amount || 0), currency),
-        ]),
-        styles: { font: "helvetica", fontSize: 9, cellPadding: 7, lineColor: [226, 232, 240], lineWidth: 0.5 },
-        headStyles: { fillColor: headerColors[type], textColor: 255, fontStyle: "bold", fontSize: 9 },
-        alternateRowStyles: { fillColor: [248, 250, 252] },
-        columnStyles: {
-          0: { cellWidth: 30, halign: "center", fontStyle: "bold" },
-          2: { cellWidth: 72, halign: "center" },
-          3: { cellWidth: 40, halign: "center" },
-          4: { cellWidth: 90, halign: "right" },
-          5: { cellWidth: 100, halign: "right", fontStyle: "bold" },
-        },
-        margin: { left: 40, right: 40 },
+    if (!uid) return;
+    (async () => {
+      setLoading(true);
+      const { data: tbls } = await supabase.from("user_tables").select("id,name").eq("user_id", uid);
+      const tableList = (tbls ?? []) as DbTable[];
+      setTables(tableList);
+      if (!tableList.length) { setLoading(false); return; }
+      const ids = tableList.map(t => t.id);
+      const { data: cols } = await supabase.from("user_columns").select("*").in("table_id", ids);
+      const allCols = (cols ?? []) as DbColumn[];
+      setColumns(allCols);
+      const amtTids = [...new Set(allCols.filter(c => c.type === "amount").map(c => c.table_id))];
+      if (!amtTids.length) { setLoading(false); return; }
+      const { data: rowData } = await supabase.from("user_rows").select("*").in("table_id", amtTids).order("created_at");
+      setRows(((rowData ?? []) as DbRow[]).map(r => ({ ...r, row_data: r.row_data ?? {} })));
+      const map: Record<string, string> = {};
+      amtTids.forEach(tid => {
+        const tCols = allCols.filter(c => c.table_id === tid);
+        map[tid] = (tCols.find(c => c.type === "date") || tCols.find(c => c.type === "text") || tCols[0])?.name ?? "";
       });
+      setXAxisMap(map);
+      setActiveTable(amtTids[0]);
+      setLoading(false);
+    })();
+  }, [uid]);
 
-      const afterTable = (pdf as any).lastAutoTable.finalY + 16;
+  const pivotData = useMemo(() => {
+    return tables.map(table => {
+      const tCols = columns.filter(c => c.table_id === table.id);
+      const amtCols = tCols.filter(c => c.type === "amount");
+      if (!amtCols.length) return null;
+      const tRows = rows.filter(r => r.table_id === table.id);
+      if (!tRows.length) return null;
+      const xCol = xAxisMap[table.id] ?? "";
+      const chartRows = tRows.map((r, i) => {
+        const raw = xCol ? r.row_data[xCol] : null;
+        const xVal = raw != null && raw !== ""
+          ? (tCols.find(c => c.name === xCol)?.type === "date" ? toDMY(String(raw)) : String(raw))
+          : `Row ${i + 1}`;
+        const entry: Record<string, any> = { name: xVal };
+        amtCols.forEach(c => { entry[c.name] = toNum(r.row_data[c.name]); });
+        return entry;
+      });
+      const stats = amtCols.map(col => {
+        const vals = tRows.map(r => toNum(r.row_data[col.name]));
+        const total = vals.reduce((a, b) => a + b, 0);
+        const nz = vals.filter(v => v > 0);
+        return { col, total, avg: nz.length ? total / nz.length : 0, max: Math.max(...vals), min: nz.length ? Math.min(...nz) : 0, count: nz.length };
+      });
+      return { table, tCols, amtCols, chartRows, stats, xCol };
+    }).filter(Boolean) as { table: DbTable; tCols: DbColumn[]; amtCols: DbColumn[]; chartRows: Record<string,any>[]; stats: { col: DbColumn; total: number; avg: number; max: number; min: number; count: number }[]; xCol: string }[];
+  }, [tables, columns, rows, xAxisMap]);
 
-      // ── Totals box ──
-      const boxW = 230; const boxX = pageW - 40 - boxW;
-      const rows = [
-        { l: "Subtotal", v: moneyPDF(Number(totals.subtotal || 0), currency) },
-        { l: `Tax (${Number(totals.tax_percent || 0).toFixed(0)}%)`, v: moneyPDF(Number(totals.tax_amount || 0), currency) },
+  // ── Beautiful PDF ──────────────────────────────────────────────────────────
+  const dlPDF = async () => {
+    if (!hasAccess) return toast.error("Upgrade to download analytics");
+    const pd = pivotData.find(p => p.table.id === activeTable) || pivotData[0];
+    if (!pd) return toast.error("No data to export");
+
+    const barC = document.createElement("canvas"); barC.width = 600; barC.height = 240;
+    const pieC = document.createElement("canvas"); pieC.width = 600; pieC.height = 240;
+    drawBarChart(barC, pd.chartRows, pd.amtCols[0].name, cur);
+    drawPieChart(pieC, pd.chartRows, pd.amtCols[0].name);
+    const barImg = barC.toDataURL("image/png");
+    const pieImg = pieC.toDataURL("image/png");
+
+    const doc = new jsPDF({ orientation: "l", unit: "pt", format: "a4" });
+    const pw = doc.internal.pageSize.width;
+    const ph = doc.internal.pageSize.height;
+
+    // ── Header band ──
+    doc.setFillColor(15, 23, 42);
+    doc.rect(0, 0, pw, 56, "F");
+
+    // Accent stripe
+    doc.setFillColor(59, 130, 246);
+    doc.rect(0, 0, 5, 56, "F");
+
+    doc.setTextColor(255, 255, 255);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(18);
+    doc.text(pd.table.name, 22, 28);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(148, 163, 184);
+    doc.text("Analytics Report", 22, 42);
+
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(100, 116, 139);
+    doc.text(`Generated: ${new Date().toLocaleString("en-IN")}`, pw - 24, 28, { align: "right" });
+    doc.text(`Currency: ${cur}`, pw - 24, 42, { align: "right" });
+
+    let y = 72;
+
+    // ── Summary Cards ──
+    doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(15, 23, 42);
+    doc.text("Summary", 24, y); y += 8;
+
+    pd.stats.forEach(s => {
+      const cards = [
+        { l: "Total Revenue", v: formatCurrencyPDF(s.total, cur), color: [59, 130, 246] as [number,number,number] },
+        { l: "Average", v: formatCurrencyPDF(s.avg, cur), color: [34, 197, 94] as [number,number,number] },
+        { l: "Highest Entry", v: formatCurrencyPDF(s.max, cur), color: [245, 158, 11] as [number,number,number] },
+        { l: "Lowest Entry", v: formatCurrencyPDF(s.min, cur), color: [239, 68, 68] as [number,number,number] },
+        { l: "Total Entries", v: String(s.count), color: [168, 85, 247] as [number,number,number] },
       ];
-      const totalBoxH = 14 + rows.length * 24 + 36;
-      pdf.setFillColor(248, 250, 252); pdf.setDrawColor(226, 232, 240);
-      pdf.roundedRect(boxX, afterTable, boxW, totalBoxH, 8, 8, "FD");
-
-      let rowY = afterTable + 18;
-      rows.forEach(r => {
-        pdf.setFont("helvetica", "normal"); pdf.setFontSize(9); pdf.setTextColor(71, 85, 105);
-        pdf.text(r.l, boxX + 14, rowY);
-        pdf.text(r.v, boxX + boxW - 14, rowY, { align: "right" });
-        rowY += 24;
+      const cw = (pw - 48) / cards.length;
+      cards.forEach((c, i) => {
+        const x = 24 + i * cw;
+        // Card bg
+        doc.setFillColor(248, 250, 252);
+        doc.setDrawColor(226, 232, 240);
+        doc.roundedRect(x, y, cw - 6, 38, 4, 4, "FD");
+        // Colored top accent
+        doc.setFillColor(...c.color);
+        doc.roundedRect(x, y, cw - 6, 4, 2, 2, "F");
+        // Label
+        doc.setFont("helvetica", "normal"); doc.setFontSize(7); doc.setTextColor(100, 116, 139);
+        doc.text(c.l, x + 8, y + 15);
+        // Value
+        doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(...c.color);
+        doc.text(c.v, x + 8, y + 29);
       });
+      y += 46;
+    });
 
-      // Grand total row
-      pdf.setFillColor(...accentColors[type]);
-      pdf.roundedRect(boxX, rowY - 2, boxW, 28, 0, 0, "F");
-      pdf.roundedRect(boxX, rowY - 2 + 28 - 8, boxW, 8, 0, 0, "F");
-      pdf.roundedRect(boxX, rowY - 2, boxW, 28, 8, 8, "F");
-      pdf.setFont("helvetica", "bold"); pdf.setFontSize(11); pdf.setTextColor(255, 255, 255);
-      pdf.text("Grand Total", boxX + 14, rowY + 14);
-      pdf.text(moneyPDF(Number(totals.total || 0), currency), boxX + boxW - 14, rowY + 14, { align: "right" });
+    y += 6;
 
-      // ── Terms ──
-      const termsY = (pdf as any).lastAutoTable.finalY + totalBoxH + 28;
-      if (termsY < pageH - 100) {
-        pdf.setFont("helvetica", "bold"); pdf.setFontSize(9); pdf.setTextColor(15, 23, 42);
-        pdf.text("Terms & Conditions", 40, termsY);
-        pdf.setFont("helvetica", "normal"); pdf.setFontSize(8); pdf.setTextColor(71, 85, 105);
-        const tLines = pdf.splitTextToSize(String(totals.terms || DEFAULT_TERMS), pageW / 2 - 20);
-        pdf.text(tLines, 40, termsY + 14);
-      }
+    // ── Charts ──
+    doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(15, 23, 42);
+    const chartW = (pw - 56) / 2;
+    const chartH = 148;
 
-      // ── Signature ──
-      const sigY = pageH - 80;
-      const sigX1 = pageW - 200; const sigX2 = pageW - 40;
-      const sigUrl = branding?.signature_url;
-      if (sigUrl) {
-        const sigDataUrl = await urlToDataURL(sigUrl);
-        if (sigDataUrl) {
-          const isPng = sigDataUrl.startsWith("data:image/png");
-          pdf.addImage(sigDataUrl, isPng ? "PNG" : "JPEG" as any, pageW - 210, sigY - 52, 170, 46);
+    // Chart cards bg
+    doc.setFillColor(248, 250, 252); doc.setDrawColor(226, 232, 240);
+    doc.roundedRect(24, y, chartW, chartH + 24, 6, 6, "FD");
+    doc.roundedRect(32 + chartW, y, chartW, chartH + 24, 6, 6, "FD");
+
+    doc.setTextColor(15, 23, 42); doc.setFont("helvetica", "bold"); doc.setFontSize(9);
+    doc.text("📊  Bar Chart — " + (pd.amtCols[0]?.name || "Amount"), 32, y + 13);
+    doc.text("🥧  Distribution — Pie Chart", 40 + chartW, y + 13);
+
+    doc.addImage(barImg, "PNG", 26, y + 18, chartW - 4, chartH);
+    doc.addImage(pieImg, "PNG", 34 + chartW, y + 18, chartW - 4, chartH);
+
+    y += chartH + 34;
+
+    // ── Data Table ──
+    doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(15, 23, 42);
+    doc.text("Detailed Data", 24, y); y += 6;
+
+    const head = [[pd.xCol || "Row", ...pd.amtCols.map(c => c.name)]];
+    const body = pd.chartRows.map(r => [r.name, ...pd.amtCols.map(c => formatCurrencyPDF(r[c.name] ?? 0, cur))]);
+    const totalRow = ["TOTAL", ...pd.stats.map(s => formatCurrencyPDF(s.total, cur))];
+
+    autoTable(doc, {
+      startY: y,
+      head,
+      body: [...body, totalRow],
+      styles: { font: "helvetica", fontSize: 8, cellPadding: 5, lineColor: [226, 232, 240], lineWidth: 0.5 },
+      headStyles: { fillColor: [15, 23, 42], textColor: 255, fontStyle: "bold", fontSize: 8.5 },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: { 0: { fontStyle: "bold", textColor: [15, 23, 42] } },
+      didParseCell: (d: any) => {
+        if (d.row.index === body.length) {
+          d.cell.styles.fillColor = [59, 130, 246];
+          d.cell.styles.textColor = [255, 255, 255];
+          d.cell.styles.fontStyle = "bold";
         }
-      }
-      pdf.setDrawColor(203, 213, 225); pdf.line(sigX1, sigY, sigX2, sigY);
-      pdf.setFont("helvetica", "bold"); pdf.setFontSize(9); pdf.setTextColor(30, 41, 59);
-      pdf.text("Authorised Signature", pageW - 40, sigY + 14, { align: "right" });
+      },
+      margin: { left: 24, right: 24 },
+    });
 
-      // ── Footer ──
-      pdf.setFillColor(248, 250, 252);
-      pdf.rect(0, pageH - 20, pageW, 20, "F");
-      pdf.setFont("helvetica", "normal"); pdf.setFontSize(7); pdf.setTextColor(148, 163, 184);
-      pdf.text("Generated by LedgerlyPro · ledgerlypro.in", pageW / 2, pageH - 7, { align: "center" });
+    // ── Footer ──
+    doc.setFillColor(248, 250, 252);
+    doc.rect(0, ph - 22, pw, 22, "F");
+    doc.setFont("helvetica", "normal"); doc.setFontSize(7); doc.setTextColor(148, 163, 184);
+    doc.text("Generated by LedgerlyPro · ledgerlypro.in", pw / 2, ph - 8, { align: "center" });
 
-      pdf.save(`${safeFileName(title)}-${safeFileName(docNo)}.pdf`);
-      toast.success("PDF downloaded!");
-    } catch (e: any) {
-      toast.error(e?.message || "PDF download failed");
-    }
+    doc.save(`${pd.table.name}-analytics.pdf`);
+    toast.success("Analytics PDF downloaded!");
   };
 
-  const renderForm = () => (
-    <div className="space-y-6">
-      {/* Type / Doc No / Currency */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="space-y-1.5">
-          <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Type</Label>
-          <Select value={form.type} onValueChange={v => {
-            const t = v as DocType;
-            setForm(p => ({ ...p, type: t, totals: { ...p.totals, note: introText(t) } }));
-          }}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="invoice">Invoice</SelectItem>
-              <SelectItem value="quotation">Quotation</SelectItem>
-              <SelectItem value="bill">Bill</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Document No.</Label>
-          <Input value={form.doc_no} onChange={e => setForm({ ...form, doc_no: e.target.value })} placeholder="INV-001 / QT-001 / BILL-001" />
-        </div>
-        <div className="space-y-1.5">
-          <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Currency</Label>
-          <Select value={form.currency_code} onValueChange={v => setForm({ ...form, currency_code: v })}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="INR">INR (₹)</SelectItem>
-              <SelectItem value="USD">USD ($)</SelectItem>
-              <SelectItem value="EUR">EUR (€)</SelectItem>
-              <SelectItem value="GBP">GBP (£)</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
+  const renderChart = (pd: typeof pivotData[0], mode: ChartMode) => {
+    if (!pd || !pd.chartRows.length) return null;
+    const { chartRows, amtCols } = pd;
+    const common = { data: chartRows, margin: { top: 8, right: 24, bottom: 56, left: 16 } };
+    const xAx = <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#6b7280" }} tickLine={false} angle={-30} textAnchor="end" interval={0} />;
+    const yAx = <YAxis tick={{ fontSize: 10, fill: "#6b7280" }} tickLine={false} axisLine={false} tickFormatter={v => formatCurrency(Number(v), cur)} width={80} />;
+    const grid = <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />;
+    const tip = <Tooltip content={<CustomTooltip cur={cur} />} />;
+    const leg = <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />;
 
-      {/* Customer */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="space-y-1.5">
-          <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Customer Name</Label>
-          <Input value={form.customer_name} onChange={e => setForm({ ...form, customer_name: e.target.value })} />
-        </div>
-        <div className="space-y-1.5">
-          <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Phone</Label>
-          <Input value={form.customer_phone} onChange={e => setForm({ ...form, customer_phone: e.target.value })} />
-        </div>
-        <div className="space-y-1.5 sm:col-span-2">
-          <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Address</Label>
-          <Textarea value={form.customer_address} onChange={e => setForm({ ...form, customer_address: e.target.value })} rows={2} />
-        </div>
-      </div>
-
-      {/* Intro note */}
-      <div className="space-y-1.5">
-        <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Intro Note (in PDF)</Label>
-        <Textarea value={form.totals.note} onChange={e => setForm({ ...form, totals: { ...form.totals, note: e.target.value } })} rows={2} />
-      </div>
-
-      {/* Items */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Items</Label>
-          <Button variant="outline" size="sm" onClick={addItem} className="h-7 text-xs gap-1">
-            <Plus className="w-3 h-3" /> Add Item
-          </Button>
-        </div>
-        <div className="space-y-2">
-          {form.items.map((item, idx) => (
-            <div key={idx} className="rounded-xl border bg-muted/20 p-3 space-y-2">
-              <div className="grid grid-cols-12 gap-2 items-end">
-                <div className="col-span-5">
-                  <Label className="text-xs text-muted-foreground">Description</Label>
-                  <Input placeholder="Service / Product" value={item.description} onChange={e => updateItem(idx, "description", e.target.value)} className="h-8 text-sm" />
-                </div>
-                <div className="col-span-2">
-                  <Label className="text-xs text-muted-foreground">HSN/SAC</Label>
-                  <Input placeholder="9983" value={item.hsn} onChange={e => updateItem(idx, "hsn", e.target.value)} className="h-8 text-sm" />
-                </div>
-                <div className="col-span-1">
-                  <Label className="text-xs text-muted-foreground">Qty</Label>
-                  <Input type="number" value={item.qty} onChange={e => updateItem(idx, "qty", Number(e.target.value))} className="h-8 text-sm" />
-                </div>
-                <div className="col-span-2">
-                  <Label className="text-xs text-muted-foreground">Rate</Label>
-                  <Input type="number" value={item.rate} onChange={e => updateItem(idx, "rate", Number(e.target.value))} className="h-8 text-sm" />
-                </div>
-                <div className="col-span-2 text-right">
-                  <Label className="text-xs text-muted-foreground">Amount</Label>
-                  <div className="h-8 flex items-center justify-end font-bold text-sm text-primary">
-                    {moneyUI(Number(item.amount || 0), form.currency_code)}
-                  </div>
-                </div>
+    if (mode === "pie") {
+      return (
+        <div className={`grid gap-6 ${amtCols.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
+          {amtCols.map((col, ci) => {
+            const pd2 = chartRows.map(r => ({ name: r.name, value: r[col.name] ?? 0 })).filter(d => d.value > 0);
+            return (
+              <div key={col.id}>
+                <p className="text-xs font-semibold text-muted-foreground mb-2 text-center">{col.name}</p>
+                <ResponsiveContainer width="100%" height={280}>
+                  <PieChart>
+                    <Pie data={pd2} dataKey="value" nameKey="name" cx="50%" cy="45%" outerRadius={100} innerRadius={42} paddingAngle={3}>
+                      {pd2.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                    </Pie>
+                    <Tooltip content={<CustomTooltip cur={cur} />} />
+                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                  </PieChart>
+                </ResponsiveContainer>
               </div>
-              {form.items.length > 1 && (
-                <div className="flex justify-end">
-                  <Button variant="ghost" size="sm" className="h-6 text-xs text-destructive hover:text-destructive" onClick={() => removeItem(idx)}>
-                    Remove
-                  </Button>
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
-      </div>
+      );
+    }
+    if (mode === "line") {
+      return (
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart {...common}>{grid}{xAx}{yAx}{tip}{leg}
+            {amtCols.map((col, i) => <Line key={col.id} type="monotone" dataKey={col.name} stroke={COLORS[i % COLORS.length]} strokeWidth={2.5} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />)}
+          </LineChart>
+        </ResponsiveContainer>
+      );
+    }
+    if (mode === "composed") {
+      return (
+        <ResponsiveContainer width="100%" height={300}>
+          <ComposedChart {...common}>{grid}{xAx}{yAx}{tip}{leg}
+            {amtCols.map((col, i) => i === 0
+              ? <Bar key={col.id} dataKey={col.name} fill={COLORS[0]} radius={[6, 6, 0, 0]} maxBarSize={48} />
+              : <Line key={col.id} type="monotone" dataKey={col.name} stroke={COLORS[i % COLORS.length]} strokeWidth={2} dot={{ r: 3 }} />
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+    return (
+      <ResponsiveContainer width="100%" height={300}>
+        <BarChart {...common}>{grid}{xAx}{yAx}{tip}{leg}
+          {amtCols.map((col, i) => <Bar key={col.id} dataKey={col.name} fill={COLORS[i % COLORS.length]} radius={[6, 6, 0, 0]} maxBarSize={48} />)}
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  };
 
-      {/* Totals */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
-        <div className="space-y-1.5">
-          <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tax %</Label>
-          <Input type="number" value={form.totals.tax_percent} onChange={e => recalcTotals(form.items, Number(e.target.value))} placeholder="0" />
-        </div>
-        <div className="bg-muted/30 rounded-xl p-4 space-y-1 text-right">
-          <p className="text-sm text-muted-foreground">Subtotal: <span className="font-medium text-foreground">{moneyUI(form.totals.subtotal, form.currency_code)}</span></p>
-          <p className="text-sm text-muted-foreground">Tax ({form.totals.tax_percent}%): <span className="font-medium text-foreground">{moneyUI(form.totals.tax_amount, form.currency_code)}</span></p>
-          <p className="text-base font-bold border-t pt-1 mt-1">Grand Total: {moneyUI(form.totals.total, form.currency_code)}</p>
-        </div>
-      </div>
+  if (loading) return (
+    <div className="flex items-center justify-center h-64">
+      <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
+    </div>
+  );
 
-      {/* Terms */}
-      <div className="space-y-1.5">
-        <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Terms & Conditions</Label>
-        <Textarea value={form.totals.terms} onChange={e => setForm({ ...form, totals: { ...form.totals, terms: e.target.value } })} rows={4} className="text-xs" />
+  if (!pivotData.length) return (
+    <div className="flex flex-col items-center justify-center h-64 text-center gap-4">
+      <div className="w-20 h-20 rounded-2xl bg-muted/50 flex items-center justify-center">
+        <IndianRupee className="w-10 h-10 text-muted-foreground/30" />
+      </div>
+      <div>
+        <h3 className="text-lg font-semibold">No data yet</h3>
+        <p className="text-muted-foreground text-sm mt-1 max-w-xs">Set at least one column type to <strong>Amount (₹)</strong> on the Tables page to see analytics.</p>
       </div>
     </div>
   );
 
+  const activePD = pivotData.find(p => p.table.id === activeTable) || pivotData[0];
+  const sym = getCurrencySymbol(cur);
+
   return (
     <div className="space-y-6 pb-10">
 
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
+      {/* ── TOP BAR ── */}
+      <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
-              <FileText className="w-4 h-4 text-blue-500" />
+              <TrendingUp className="w-4 h-4 text-blue-500" />
             </div>
-            Documents
+            Analytics
           </h1>
-          <p className="text-muted-foreground text-sm mt-1">{docs.length} document{docs.length !== 1 ? "s" : ""}</p>
+          <p className="text-muted-foreground text-sm mt-1">Currency: <strong>{sym} {cur}</strong></p>
         </div>
-        <Dialog open={showCreate} onOpenChange={setShowCreate}>
-          <DialogTrigger asChild>
-            <Button size="sm" className="gap-2 h-9">
-              <Plus className="h-4 w-4" /> New Document
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>Create Document</DialogTitle>
-            </DialogHeader>
-            {renderForm()}
-            <Button onClick={save} className="w-full mt-2">Save Document</Button>
-          </DialogContent>
-        </Dialog>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Chart mode switcher */}
+          <div className="flex items-center gap-0.5 bg-muted rounded-xl p-1">
+            {([["bar","Bar",BarChart2],["line","Line",TrendingUp],["pie","Pie",PieIcon],["composed","Mixed",LayoutDashboard]] as const).map(([k, label, Icon]) => (
+              <button key={k} onClick={() => setChartMode(k as ChartMode)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${chartMode === k ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+                <Icon className="w-3.5 h-3.5" />{label}
+              </button>
+            ))}
+          </div>
+          <Button size="sm" onClick={dlPDF}
+            className="h-9 gap-2 text-xs bg-blue-600 hover:bg-blue-700 text-white">
+            <Download className="w-3.5 h-3.5" /> Download PDF
+          </Button>
+        </div>
       </div>
 
-      {/* Edit Dialog */}
-      <Dialog open={showEdit} onOpenChange={setShowEdit}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Edit Document</DialogTitle></DialogHeader>
-          {renderForm()}
-          <Button onClick={saveEdit} className="w-full mt-2">Update Document</Button>
-        </DialogContent>
-      </Dialog>
+      {/* ── TABLE TABS ── */}
+      {pivotData.length > 1 && (
+        <div className="flex gap-1 border-b overflow-x-auto pb-0">
+          {pivotData.map(pd => (
+            <button key={pd.table.id} onClick={() => setActiveTable(pd.table.id)}
+              className={`flex items-center gap-2 px-4 py-2.5 text-sm whitespace-nowrap border-b-2 transition-all -mb-px font-medium ${activeTable === pd.table.id ? "border-blue-500 text-blue-600" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
+              <Table2 className="w-3.5 h-3.5" />{pd.table.name}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {/* Doc list */}
-      <div className="space-y-2">
-        {docs.map(d => (
-          <div key={d.id} className="bg-card border rounded-2xl p-4 flex items-center justify-between gap-4 hover:shadow-sm transition-all">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 ${DOC_COLORS[d.type as DocType] || "bg-gray-50 text-gray-600 border-gray-100"}`}>
-                {DOC_ICONS[d.type as DocType] || <FileText className="w-4 h-4" />}
-              </div>
-              <div className="min-w-0">
-                <p className="font-semibold text-sm truncate">
-                  {String(d.type || "").toUpperCase()} · {d.doc_no || "No number"}
-                </p>
-                <p className="text-xs text-muted-foreground truncate mt-0.5">
-                  {d.customer_name || "Customer"}
-                  {d.created_at ? ` · ${new Date(d.created_at).toLocaleDateString("en-IN")}` : ""}
-                  {d.totals?.total !== undefined ? ` · ${moneyUI(Number(d.totals.total || 0), d.currency_code || "INR")}` : ""}
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-1.5 shrink-0">
-              <Button variant="outline" size="icon" className="h-8 w-8 rounded-lg" onClick={() => openEdit(d)} title="Edit">
-                <Pencil className="h-3.5 w-3.5" />
-              </Button>
-              <Button variant="outline" size="icon" className={`h-8 w-8 rounded-lg ${!hasAccess ? "opacity-40 cursor-not-allowed" : ""}`}
-                onClick={() => downloadPDF(d)} disabled={!hasAccess} title="Download PDF">
-                <Download className="h-3.5 w-3.5" />
-              </Button>
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="outline" size="icon" className="h-8 w-8 rounded-lg text-destructive hover:text-destructive" title="Delete">
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Delete this document?</AlertDialogTitle>
-                    <AlertDialogDescription>This action cannot be undone.</AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => deleteDoc(d.id)}>Delete</AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+      {activePD && (<>
+
+        {/* ── X-AXIS PICKER ── */}
+        <div className="flex items-center gap-3 bg-muted/40 border rounded-xl px-4 py-3 flex-wrap">
+          <span className="text-xs text-muted-foreground font-medium">X-Axis column:</span>
+          <Select value={xAxisMap[activePD.table.id] ?? ""} onValueChange={v => setXAxisMap(p => ({ ...p, [activePD.table.id]: v }))}>
+            <SelectTrigger className="h-7 w-44 text-xs bg-background">
+              <SelectValue placeholder="Choose column..." />
+            </SelectTrigger>
+            <SelectContent>
+              {activePD.tCols.filter(c => c.type !== "amount").map(c => (
+                <SelectItem key={c.id} value={c.name} className="text-xs">{c.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="text-xs text-muted-foreground">Y-Axis: <strong className="text-foreground">{activePD.amtCols.map(c => c.name).join(", ")}</strong></span>
+        </div>
+
+        {/* ── STAT CARDS ── */}
+        {activePD.stats.map((s, si) => (
+          <div key={s.col.id}>
+            {activePD.stats.length > 1 && (
+              <p className="text-xs font-semibold text-muted-foreground mb-3 flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ background: COLORS[si % COLORS.length] }} />
+                {s.col.name}
+              </p>
+            )}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {[
+                { label: "Total", value: formatCurrency(s.total, cur), icon: "Σ", color: "text-blue-600", bg: "bg-blue-50", border: "border-blue-100" },
+                { label: "Average", value: formatCurrency(s.avg, cur), icon: "∅", color: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-100" },
+                { label: "Highest", value: formatCurrency(s.max, cur), icon: <ArrowUpRight className="w-3.5 h-3.5" />, color: "text-orange-500", bg: "bg-orange-50", border: "border-orange-100" },
+                { label: "Lowest", value: formatCurrency(s.min, cur), icon: <ArrowDownRight className="w-3.5 h-3.5" />, color: "text-red-500", bg: "bg-red-50", border: "border-red-100" },
+                { label: "Entries", value: String(s.count), icon: "#", color: "text-purple-600", bg: "bg-purple-50", border: "border-purple-100" },
+              ].map(c => (
+                <div key={c.label} className={`rounded-2xl border p-4 hover:shadow-md transition-all ${c.bg} ${c.border}`}>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs text-muted-foreground font-medium">{c.label}</span>
+                    <span className={`text-sm font-bold ${c.color}`}>{c.icon}</span>
+                  </div>
+                  <p className={`text-xl font-bold tracking-tight ${c.color}`}>{c.value}</p>
+                </div>
+              ))}
             </div>
           </div>
         ))}
-        {docs.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-16 text-center gap-3">
-            <div className="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center">
-              <FileText className="w-8 h-8 text-muted-foreground/30" />
+
+        {/* ── CHARTS ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="bg-card border rounded-2xl p-5">
+            <div className="mb-4">
+              <h3 className="font-semibold text-sm">{activePD.amtCols.map(c => c.name).join(" · ")} — by {activePD.xCol || "Row"}</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">{activePD.chartRows.length} data points</p>
             </div>
+            {chartMode === "pie" ? renderChart(activePD, "bar") : renderChart(activePD, chartMode)}
+          </div>
+          <div className="bg-card border rounded-2xl p-5">
+            <div className="mb-4">
+              <h3 className="font-semibold text-sm">Distribution</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">Share per entry</p>
+            </div>
+            {renderChart(activePD, "pie")}
+          </div>
+        </div>
+
+        {/* ── DATA TABLE ── */}
+        <div className="bg-card border rounded-2xl overflow-hidden">
+          <div className="px-5 py-4 border-b flex items-center justify-between bg-muted/30">
             <div>
-              <p className="font-semibold text-sm">No documents yet</p>
-              <p className="text-muted-foreground text-xs mt-1">Create your first invoice, quotation or bill</p>
+              <h3 className="font-semibold text-sm">Data Table</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">{activePD.chartRows.length} rows · {sym} {cur}</p>
             </div>
           </div>
-        )}
-      </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-muted/40 border-b">
+                  <th className="text-left px-5 py-3 font-semibold text-muted-foreground text-xs tracking-wide uppercase">{activePD.xCol || "Row"}</th>
+                  {activePD.amtCols.map(c => (
+                    <th key={c.id} className="text-right px-5 py-3 font-semibold text-muted-foreground text-xs tracking-wide uppercase">{c.name}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {activePD.chartRows.map((r, i) => (
+                  <tr key={i} className="border-b last:border-0 hover:bg-muted/20 transition-colors">
+                    <td className="px-5 py-3 font-medium text-sm">{r.name}</td>
+                    {activePD.amtCols.map(c => (
+                      <td key={c.id} className="px-5 py-3 text-right font-semibold text-blue-600 text-sm">{formatCurrency(r[c.name] ?? 0, cur)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bg-blue-600 text-white">
+                  <td className="px-5 py-3.5 font-bold text-sm tracking-wide">TOTAL</td>
+                  {activePD.stats.map(s => (
+                    <td key={s.col.id} className="px-5 py-3.5 text-right font-bold text-sm">{formatCurrency(s.total, cur)}</td>
+                  ))}
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+
+      </>)}
     </div>
   );
 }
