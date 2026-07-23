@@ -7,7 +7,6 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Analytics } from "@vercel/analytics/react";
-
 import Index from "./pages/Index";
 import AuthPage from "./pages/AuthPage";
 import AuthCallback from "./pages/AuthCallback";
@@ -19,6 +18,7 @@ import AnalyticsPage from "./pages/AnalyticsPage";
 import WalletPage from "./pages/Walletpage";
 import SettingsPage from "./pages/SettingsPage";
 import NotFound from "./pages/NotFound";
+import DocumentEditorPage from "./pages/DocumentEditorPage";
 
 const queryClient = new QueryClient();
 
@@ -46,6 +46,7 @@ const App = () => (
               <Route path="pricing" element={<PricingPage />} />
               <Route path="wallet" element={<WalletPage />} />
               <Route path="settings" element={<SettingsPage />} />
+              <Route path="document-editor" element={<DocumentEditorPage />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>
