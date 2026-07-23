@@ -839,6 +839,30 @@ export default function DocumentEditorPage() {
 
         const parser = new DOMParser();
         const dom = parser.parseFromString(result.value, "text/html");
+
+        // ── Fix Word text-box / floating-shape overlap ──
+        // Word's logo/header blocks are often built from absolutely
+        // positioned text boxes anchored to a fixed canvas position.
+        // mammoth carries some of that positioning over as inline
+        // `position:absolute/fixed`, explicit top/left offsets, negative
+        // margins, or `text-indent` tricks — all of which are meaningless
+        // in a flowing HTML document and make separate lines/letters
+        // stack on top of each other. Strip that positioning so every
+        // element falls back into normal document flow instead of
+        // overlapping.
+        dom.querySelectorAll<HTMLElement>("[style]").forEach(el => {
+          const s = el.style;
+          if (s.position === "absolute" || s.position === "fixed") s.position = "static";
+          if (s.top) s.top = "";
+          if (s.left) s.left = "";
+          if (s.right) s.right = "";
+          if (s.bottom) s.bottom = "";
+          if (s.marginTop && parseFloat(s.marginTop) < 0) s.marginTop = "0";
+          if (s.marginLeft && parseFloat(s.marginLeft) < 0) s.marginLeft = "0";
+          if (s.textIndent && parseFloat(s.textIndent) < 0) s.textIndent = "0";
+          if (s.transform) s.transform = "";
+        });
+
         dom.querySelectorAll("table").forEach(t => {
           (t as HTMLElement).style.cssText = "border-collapse:collapse;width:100%;margin:8px 0;";
         });
