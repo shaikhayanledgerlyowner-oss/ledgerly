@@ -493,6 +493,65 @@ function InsertTableModal({ onInsert, onClose }: { onInsert:(r:number,c:number)=
   );
 }
 
+function getMaxFontSizePx(el: HTMLElement): number {
+  let max = 0;
+  const consider = (e: HTMLElement) => {
+    const fs = e.style?.fontSize;
+    if (fs) {
+      const m = fs.match(/([\d.]+)\s*(px|pt)/);
+      if (m) {
+        let val = parseFloat(m[1]);
+        if (m[2] === "pt") val = val * 1.333;
+        if (val > max) max = val;
+      }
+    }
+  };
+  consider(el);
+  el.querySelectorAll<HTMLElement>("*").forEach(consider);
+  return max;
+}
+
+/* Word text boxes (e.g. a logo made of 2-3 separately-colored text boxes
+   like "S.N" / "E" / "LEVATORS") get flattened by mammoth into that many
+   separate <p> paragraphs, one after another — which is why they end up
+   stacked vertically instead of side-by-side like in the original Word
+   doc. This detects runs of consecutive short, large-font paragraphs
+   (the signature of a text-box-based logo/heading) and merges them back
+   into a single inline row, preserving each fragment's own font/color. */
+function mergeLogoFragments(root: HTMLElement) {
+  const paragraphs = Array.from(root.querySelectorAll("p"));
+  let i = 0;
+  while (i < paragraphs.length) {
+    const group: HTMLElement[] = [];
+    let j = i;
+    while (j < paragraphs.length) {
+      const p = paragraphs[j];
+      if (!p.isConnected) { j++; continue; }
+      const text = p.textContent?.trim() || "";
+      const fontSize = getMaxFontSizePx(p);
+      const isLogoLike = text.length > 0 && text.length <= 25 && fontSize >= 18;
+      const isConsecutive = group.length === 0 ||
+        (p.previousElementSibling === group[group.length - 1] &&
+         p.parentElement === group[group.length - 1].parentElement);
+      if (isLogoLike && isConsecutive) { group.push(p); j++; }
+      else break;
+    }
+    if (group.length >= 2) {
+      const wrapper = document.createElement("p");
+      wrapper.style.cssText = "display:flex;align-items:baseline;flex-wrap:wrap;margin:.2em 0;";
+      group.forEach(p => {
+        const span = document.createElement("span");
+        span.style.cssText = "display:inline-block;white-space:nowrap;";
+        span.innerHTML = p.innerHTML;
+        wrapper.appendChild(span);
+      });
+      group[0].parentElement?.insertBefore(wrapper, group[0]);
+      group.forEach(p => p.remove());
+    }
+    i = j > i ? j : i + 1;
+  }
+}
+
 /* ════════════════════════════════════════════
    MAIN EDITOR
 ═══════════════════════════════════════════ */
@@ -863,6 +922,8 @@ export default function DocumentEditorPage() {
           if (s.textIndent && parseFloat(s.textIndent) < 0) s.textIndent = "0";
           if (s.transform) s.transform = "";
         });
+
+        mergeLogoFragments(dom.body);
 
         dom.querySelectorAll("table").forEach(t => {
           (t as HTMLElement).style.cssText = "border-collapse:collapse;width:100%;margin:8px 0;";
