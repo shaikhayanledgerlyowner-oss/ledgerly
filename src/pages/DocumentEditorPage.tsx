@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -10,7 +10,9 @@ import {
   List, ListOrdered, Undo, Redo, Save, FileText,
   Plus, Trash2, Type, Palette, Link,
   ChevronDown, Download, Table, Image as ImageIcon,
-  Upload, FilePlus, ChevronLeft, ChevronRight
+  Upload, FileUp, ChevronRight, X, Search, ArrowUpDown,
+  Copy, Pencil, Crop, RotateCw, RotateCcw, FlipHorizontal, FlipVertical,
+  Square, Circle, ArrowUpRight, Highlighter, Eraser, ZoomIn, ZoomOut,
 } from "lucide-react";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -26,6 +28,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { cn } from "@/lib/utils";
 
 declare const mammoth: any;
+// PDF import requires pdf.js loaded globally, e.g. in index.html:
+//   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+//   <script>pdfjsLib.GlobalWorkerOptions.workerSrc =
+//     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
+declare const pdfjsLib: any;
 
 interface Doc {
   id: string;
@@ -42,112 +49,405 @@ const COLORS = [
   "#ff00ff","#ff69b4","#8b0000","#006400","#00008b","#4b0082","#ff6347","#ffa500",
 ];
 
-/* ─── Image Annotate — full screen overlay ─── */
-function ImageAnnotateModal({ src, onSave, onClose }: {
-  src: string; onSave: (d: string) => void; onClose: () => void;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [drawing, setDrawing] = useState(false);
-  const [tool, setTool] = useState<"pen"|"text"|"eraser">("pen");
-  const [color, setColor] = useState("#ff0000");
-  const [lineWidth, setLineWidth] = useState(3);
-  const [textInput, setTextInput] = useState("");
-  const [textPos, setTextPos] = useState<{x:number;y:number}|null>(null);
-  const lastPos = useRef<{x:number;y:number}|null>(null);
+function drawArrowHead(ctx: CanvasRenderingContext2D, x1:number, y1:number, x2:number, y2:number, width:number, color:string) {
+  const headlen = Math.max(10, width * 4);
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - headlen * Math.cos(angle - Math.PI / 6), y2 - headlen * Math.sin(angle - Math.PI / 6));
+  ctx.lineTo(x2 - headlen * Math.cos(angle + Math.PI / 6), y2 - headlen * Math.sin(angle + Math.PI / 6));
+  ctx.closePath(); ctx.fill();
+}
 
+/* ════════════════════════════════════════════
+   IMAGE EDITOR — full-screen, mobile-gallery style
+   Tabs: Adjust / Transform / Crop / Draw. Undo/redo history.
+═══════════════════════════════════════════ */
+type ImgTab = "adjust" | "transform" | "crop" | "draw";
+type DrawTool = "pen" | "highlighter" | "eraser" | "rect" | "circle" | "arrow" | "text";
+
+function ImageEditorModal({ src, onSave, onDelete, onReplace, onClose }: {
+  src: string;
+  onSave: (dataUrl: string) => void;
+  onDelete: () => void;
+  onReplace: (file: File) => void;
+  onClose: () => void;
+}) {
+  const baseCanvasRef    = useRef<HTMLCanvasElement>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+  const replaceInputRef  = useRef<HTMLInputElement>(null);
+
+  const [tab, setTab]           = useState<ImgTab>("adjust");
+  const [brightness, setBrightness] = useState(100);
+  const [contrast, setContrast]     = useState(100);
+  const [saturation, setSaturation] = useState(100);
+  const [blur, setBlur]             = useState(0);
+  const [zoom, setZoom]             = useState(1);
+
+  const [tool, setTool]           = useState<DrawTool>("pen");
+  const [color, setColor]         = useState("#ff0000");
+  const [strokeWidth, setStrokeWidth] = useState(4);
+  const [textInput, setTextInput] = useState("");
+  const [textPos, setTextPos]     = useState<{x:number;y:number}|null>(null);
+
+  const [cropRect, setCropRect] = useState<{x:number;y:number;w:number;h:number}|null>(null);
+  const cropStart = useRef<{x:number;y:number}|null>(null);
+
+  const [hist, setHist] = useState<{list:string[]; idx:number}>({ list: [], idx: -1 });
+  const [canvasReady, setCanvasReady] = useState(false);
+
+  const drawing    = useRef(false);
+  const hadDrawing = useRef(false);
+  const startPos   = useRef<{x:number;y:number}|null>(null);
+  const lastPos    = useRef<{x:number;y:number}|null>(null);
+
+  const cssFilter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) blur(${blur}px)`;
+
+  const syncOverlaySize = () => {
+    const base = baseCanvasRef.current, overlay = overlayCanvasRef.current;
+    if (!base || !overlay) return;
+    overlay.width = base.width; overlay.height = base.height;
+  };
+
+  /* Load source image once */
   useEffect(() => {
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
-      const canvas = canvasRef.current!;
+      const canvas = baseCanvasRef.current!;
       canvas.width  = img.naturalWidth  || img.width  || 800;
       canvas.height = img.naturalHeight || img.height || 600;
       canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      syncOverlaySize();
+      const url = canvas.toDataURL("image/png");
+      setHist({ list: [url], idx: 0 });
+      setCanvasReady(true);
     };
+    img.onerror = () => toast.error("Couldn't load this image for editing.");
     img.src = src;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src]);
 
-  const getPos = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const c = canvasRef.current!;
-    const r = c.getBoundingClientRect();
-    return {
-      x: (e.clientX - r.left) * (c.width  / r.width),
-      y: (e.clientY - r.top)  * (c.height / r.height),
-    };
+  const pushHistory = () => {
+    const base = baseCanvasRef.current!;
+    const url = base.toDataURL("image/png");
+    setHist(({ list, idx }) => {
+      const trimmed = list.slice(0, idx + 1);
+      return { list: [...trimmed, url], idx: trimmed.length };
+    });
   };
 
-  const onDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (tool === "text") { setTextPos(getPos(e)); return; }
-    setDrawing(true); lastPos.current = getPos(e);
+  const loadFromHistory = (idx: number, list: string[]) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = baseCanvasRef.current!;
+      canvas.width = img.width; canvas.height = img.height;
+      canvas.getContext("2d")!.drawImage(img, 0, 0);
+      syncOverlaySize();
+    };
+    img.src = list[idx];
   };
-  const onMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!drawing || tool === "text") return;
-    const c = canvasRef.current!; const ctx = c.getContext("2d")!;
-    const p = getPos(e);
-    ctx.beginPath(); ctx.moveTo(lastPos.current!.x, lastPos.current!.y); ctx.lineTo(p.x, p.y);
-    ctx.strokeStyle = tool === "eraser" ? "#ffffff" : color;
-    ctx.lineWidth   = tool === "eraser" ? lineWidth * 8 : lineWidth * (c.width / c.getBoundingClientRect().width);
-    ctx.lineCap = "round"; ctx.stroke();
-    lastPos.current = p;
+
+  const undo = () => setHist(({ list, idx }) => {
+    if (idx <= 0) return { list, idx };
+    loadFromHistory(idx - 1, list);
+    return { list, idx: idx - 1 };
+  });
+  const redo = () => setHist(({ list, idx }) => {
+    if (idx >= list.length - 1) return { list, idx };
+    loadFromHistory(idx + 1, list);
+    return { list, idx: idx + 1 };
+  });
+
+  /* ── Transform ── */
+  const rotate = (dir: 1 | -1) => {
+    const base = baseCanvasRef.current!;
+    const tmp = document.createElement("canvas");
+    tmp.width = base.height; tmp.height = base.width;
+    const tctx = tmp.getContext("2d")!;
+    tctx.translate(tmp.width / 2, tmp.height / 2);
+    tctx.rotate((Math.PI / 2) * dir);
+    tctx.drawImage(base, -base.width / 2, -base.height / 2);
+    base.width = tmp.width; base.height = tmp.height;
+    base.getContext("2d")!.drawImage(tmp, 0, 0);
+    syncOverlaySize();
+    pushHistory();
   };
-  const onUp = () => setDrawing(false);
+  const flip = (axis: "h" | "v") => {
+    const base = baseCanvasRef.current!;
+    const tmp = document.createElement("canvas");
+    tmp.width = base.width; tmp.height = base.height;
+    const tctx = tmp.getContext("2d")!;
+    if (axis === "h") { tctx.translate(tmp.width, 0); tctx.scale(-1, 1); }
+    else { tctx.translate(0, tmp.height); tctx.scale(1, -1); }
+    tctx.drawImage(base, 0, 0);
+    const bctx = base.getContext("2d")!;
+    bctx.clearRect(0, 0, base.width, base.height);
+    bctx.drawImage(tmp, 0, 0);
+    pushHistory();
+  };
+
+  /* ── Coordinate helpers ── */
+  const getCanvasPos = (clientX: number, clientY: number) => {
+    const canvas = baseCanvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left) * (canvas.width  / rect.width),
+      y: (clientY - rect.top)  * (canvas.height / rect.height),
+    };
+  };
+  const canvasToCss = (x: number, y: number) => {
+    const canvas = baseCanvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return { x: x * (rect.width / canvas.width), y: y * (rect.height / canvas.height) };
+  };
+
+  /* ── Crop ── */
+  const onCropDown = (e: React.PointerEvent) => {
+    const p = getCanvasPos(e.clientX, e.clientY);
+    cropStart.current = p;
+    setCropRect({ x: p.x, y: p.y, w: 0, h: 0 });
+  };
+  const onCropMove = (e: React.PointerEvent) => {
+    if (!cropStart.current) return;
+    const p = getCanvasPos(e.clientX, e.clientY);
+    const s = cropStart.current;
+    setCropRect({
+      x: Math.min(s.x, p.x), y: Math.min(s.y, p.y),
+      w: Math.abs(p.x - s.x), h: Math.abs(p.y - s.y),
+    });
+  };
+  const onCropUp = () => { cropStart.current = null; };
+
+  const applyCrop = () => {
+    if (!cropRect || cropRect.w < 4 || cropRect.h < 4) { toast.error("Drag to select a crop area first."); return; }
+    const base = baseCanvasRef.current!;
+    const { x, y, w, h } = cropRect;
+    const tmp = document.createElement("canvas");
+    tmp.width = w; tmp.height = h;
+    tmp.getContext("2d")!.drawImage(base, x, y, w, h, 0, 0, w, h);
+    base.width = w; base.height = h;
+    base.getContext("2d")!.drawImage(tmp, 0, 0);
+    syncOverlaySize();
+    setCropRect(null);
+    pushHistory();
+    setTab("adjust");
+  };
+
+  /* ── Draw ── */
+  const commitOverlay = () => {
+    if (!hadDrawing.current) return;
+    const base = baseCanvasRef.current!, overlay = overlayCanvasRef.current!;
+    base.getContext("2d")!.drawImage(overlay, 0, 0);
+    overlay.getContext("2d")!.clearRect(0, 0, overlay.width, overlay.height);
+    hadDrawing.current = false;
+    pushHistory();
+  };
+
+  const onOverlayDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (tab !== "draw") return;
+    const p = getCanvasPos(e.clientX, e.clientY);
+    if (tool === "text") { setTextPos(p); return; }
+    drawing.current = true; hadDrawing.current = false;
+    startPos.current = p; lastPos.current = p;
+  };
+  const onOverlayMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (tab !== "draw" || !drawing.current) return;
+    const overlay = overlayCanvasRef.current!;
+    const ctx = overlay.getContext("2d")!;
+    const p = getCanvasPos(e.clientX, e.clientY);
+    hadDrawing.current = true;
+
+    if (tool === "pen" || tool === "highlighter" || tool === "eraser") {
+      ctx.globalCompositeOperation = tool === "eraser" ? "destination-out" : "source-over";
+      ctx.strokeStyle = tool === "highlighter" ? color + "55" : color;
+      ctx.lineWidth = tool === "highlighter" ? strokeWidth * 5 : tool === "eraser" ? strokeWidth * 6 : strokeWidth;
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(lastPos.current!.x, lastPos.current!.y);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+      lastPos.current = p;
+    } else {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = strokeWidth;
+      const s = startPos.current!;
+      if (tool === "rect") {
+        ctx.strokeRect(Math.min(s.x, p.x), Math.min(s.y, p.y), Math.abs(p.x - s.x), Math.abs(p.y - s.y));
+      } else if (tool === "circle") {
+        const rx = Math.abs(p.x - s.x) / 2, ry = Math.abs(p.y - s.y) / 2;
+        ctx.beginPath();
+        ctx.ellipse((s.x + p.x) / 2, (s.y + p.y) / 2, rx, ry, 0, 0, 2 * Math.PI);
+        ctx.stroke();
+      } else if (tool === "arrow") {
+        drawArrowHead(ctx, s.x, s.y, p.x, p.y, strokeWidth, color);
+      }
+    }
+  };
+  const onOverlayUp = () => {
+    if (tab !== "draw" || !drawing.current) return;
+    drawing.current = false;
+    commitOverlay();
+  };
 
   const placeText = () => {
     if (!textPos || !textInput.trim()) return;
-    const ctx = canvasRef.current!.getContext("2d")!;
-    ctx.font = `${lineWidth * 10 + 14}px Arial`; ctx.fillStyle = color;
+    const overlay = overlayCanvasRef.current!;
+    const ctx = overlay.getContext("2d")!;
+    ctx.font = `${Math.max(16, strokeWidth * 8)}px Arial`;
+    ctx.fillStyle = color;
+    ctx.textBaseline = "top";
     ctx.fillText(textInput, textPos.x, textPos.y);
+    hadDrawing.current = true;
+    commitOverlay();
     setTextInput(""); setTextPos(null);
   };
 
+  /* ── Save (bakes CSS filter into final pixels) ── */
+  const handleSave = () => {
+    const base = baseCanvasRef.current!;
+    const tmp = document.createElement("canvas");
+    tmp.width = base.width; tmp.height = base.height;
+    const tctx = tmp.getContext("2d")!;
+    (tctx as any).filter = cssFilter;
+    tctx.drawImage(base, 0, 0);
+    onSave(tmp.toDataURL("image/png"));
+  };
+
+  const tabBtn = (t: ImgTab, label: string) => (
+    <button onClick={() => setTab(t)}
+      style={{padding:"5px 12px",borderRadius:6,fontSize:12,fontWeight:600,border:"1px solid",cursor:"pointer",
+        background: tab===t?"white":"transparent", color: tab===t?"black":"white",
+        borderColor: tab===t?"white":"rgba(255,255,255,0.3)"}}>{label}</button>
+  );
+  const toolBtn = (t: DrawTool, icon: React.ReactNode) => (
+    <button onClick={() => setTool(t)}
+      style={{width:30,height:30,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:6,border:"1px solid",cursor:"pointer",
+        background: tool===t?"white":"transparent", color: tool===t?"black":"white",
+        borderColor: tool===t?"white":"rgba(255,255,255,0.3)"}}>{icon}</button>
+  );
+
+  const cropCss = cropRect ? { ...canvasToCss(cropRect.x, cropRect.y), ...(() => { const wh = canvasToCss(cropRect.w, cropRect.h); return { w: wh.x, h: wh.y }; })() } : null;
+
   return (
-    <div className="fixed inset-0 z-[200] flex flex-col" style={{background:"rgba(0,0,0,0.92)"}}>
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-white/10 flex-wrap shrink-0" style={{background:"#1a1a1a"}}>
-        <span className="text-white font-semibold text-sm mr-2">Annotate Image</span>
-        {(["pen","text","eraser"] as const).map(t => (
-          <button key={t} onClick={() => setTool(t)}
-            style={{padding:"3px 12px",borderRadius:6,fontSize:12,fontWeight:500,border:"1px solid",cursor:"pointer",
-              background: tool===t?"white":"transparent",
-              color: tool===t?"black":"white",
-              borderColor: tool===t?"white":"rgba(255,255,255,0.3)"}}>
-            {t==="pen"?"✏️ Pen":t==="text"?"T Text":"⌫ Eraser"}
-          </button>
-        ))}
-        <div style={{width:1,height:20,background:"rgba(255,255,255,0.2)",margin:"0 4px"}}/>
-        <label style={{color:"rgba(255,255,255,0.6)",fontSize:12}}>Color:</label>
-        <input type="color" value={color} onChange={e=>setColor(e.target.value)}
-          style={{width:28,height:28,borderRadius:4,cursor:"pointer",border:"none"}}/>
-        <label style={{color:"rgba(255,255,255,0.6)",fontSize:12}}>Size:</label>
-        <input type="range" min={1} max={15} value={lineWidth} onChange={e=>setLineWidth(Number(e.target.value))} style={{width:80}}/>
-        <span style={{color:"rgba(255,255,255,0.6)",fontSize:12}}>{lineWidth}</span>
-        <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+    <div className="fixed inset-0 z-[200] flex flex-col" style={{ background: "rgba(0,0,0,0.94)" }}>
+      {/* Top bar */}
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-white/10 flex-wrap shrink-0" style={{ background: "#1a1a1a" }}>
+        <span className="text-white font-semibold text-sm mr-2">Edit Image</span>
+        {tabBtn("adjust", "Adjust")}
+        {tabBtn("transform", "Transform")}
+        {tabBtn("crop", "Crop")}
+        {tabBtn("draw", "Draw")}
+        <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.2)", margin: "0 4px" }} />
+        <button onClick={undo} disabled={hist.idx<=0}
+          style={{opacity: hist.idx<=0?0.35:1, color:"white", background:"transparent", border:"none", cursor:"pointer", padding:4}} title="Undo"><Undo className="h-4 w-4"/></button>
+        <button onClick={redo} disabled={hist.idx>=hist.list.length-1}
+          style={{opacity: hist.idx>=hist.list.length-1?0.35:1, color:"white", background:"transparent", border:"none", cursor:"pointer", padding:4}} title="Redo"><Redo className="h-4 w-4"/></button>
+        <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.2)", margin: "0 4px" }} />
+        <button onClick={() => setZoom(z => Math.max(0.25, +(z - 0.25).toFixed(2)))} style={{color:"white",background:"transparent",border:"none",cursor:"pointer",padding:4}} title="Zoom out"><ZoomOut className="h-4 w-4"/></button>
+        <span style={{color:"rgba(255,255,255,0.7)",fontSize:12,minWidth:36,textAlign:"center"}}>{Math.round(zoom*100)}%</span>
+        <button onClick={() => setZoom(z => Math.min(3, +(z + 0.25).toFixed(2)))} style={{color:"white",background:"transparent",border:"none",cursor:"pointer",padding:4}} title="Zoom in"><ZoomIn className="h-4 w-4"/></button>
+
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <input ref={replaceInputRef} type="file" accept="image/*" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) onReplace(f); e.target.value=""; }} />
+          <button onClick={() => replaceInputRef.current?.click()}
+            style={{padding:"4px 12px",borderRadius:6,border:"1px solid rgba(255,255,255,0.3)",color:"white",background:"transparent",cursor:"pointer",fontSize:12}}>Replace</button>
+          <button onClick={onDelete}
+            style={{padding:"4px 12px",borderRadius:6,border:"1px solid #ef4444",color:"#ef4444",background:"transparent",cursor:"pointer",fontSize:12}}>Delete</button>
           <button onClick={onClose}
-            style={{padding:"4px 12px",borderRadius:6,border:"1px solid rgba(255,255,255,0.3)",
-              color:"white",background:"transparent",cursor:"pointer",fontSize:12}}>Cancel</button>
-          <button onClick={() => onSave(canvasRef.current!.toDataURL("image/png"))}
-            style={{padding:"4px 14px",borderRadius:6,border:"none",
-              background:"white",color:"black",cursor:"pointer",fontSize:12,fontWeight:600}}>Save Annotation</button>
+            style={{padding:"4px 12px",borderRadius:6,border:"1px solid rgba(255,255,255,0.3)",color:"white",background:"transparent",cursor:"pointer",fontSize:12}}>Cancel</button>
+          <button onClick={handleSave}
+            style={{padding:"4px 14px",borderRadius:6,border:"none",background:"white",color:"black",cursor:"pointer",fontSize:12,fontWeight:600}}>Save</button>
         </div>
       </div>
-      {/* Text input row */}
-      {tool === "text" && (
-        <div style={{display:"flex",gap:8,padding:"6px 16px",background:"#111",alignItems:"center"}}>
-          <input autoFocus value={textInput} onChange={e=>setTextInput(e.target.value)}
-            onKeyDown={e=>e.key==="Enter"&&placeText()}
-            placeholder="Type text, then click on image…"
-            style={{flex:1,background:"rgba(255,255,255,0.1)",color:"white",
-              border:"1px solid rgba(255,255,255,0.2)",borderRadius:6,padding:"4px 10px",fontSize:13,outline:"none"}}/>
-          <button onClick={placeText}
-            style={{padding:"4px 12px",borderRadius:6,background:"white",border:"none",cursor:"pointer",fontSize:12,fontWeight:600}}>Place</button>
+
+      {/* Sub-toolbar per tab */}
+      <div className="flex items-center gap-3 px-4 py-2 flex-wrap shrink-0" style={{ background: "#111" }}>
+        {tab === "adjust" && (
+          <>
+            <label style={{color:"rgba(255,255,255,0.7)",fontSize:12,display:"flex",alignItems:"center",gap:6}}>Brightness
+              <input type="range" min={40} max={160} value={brightness} onChange={e=>setBrightness(Number(e.target.value))} style={{width:100}}/>
+            </label>
+            <label style={{color:"rgba(255,255,255,0.7)",fontSize:12,display:"flex",alignItems:"center",gap:6}}>Contrast
+              <input type="range" min={40} max={160} value={contrast} onChange={e=>setContrast(Number(e.target.value))} style={{width:100}}/>
+            </label>
+            <label style={{color:"rgba(255,255,255,0.7)",fontSize:12,display:"flex",alignItems:"center",gap:6}}>Saturation
+              <input type="range" min={0} max={200} value={saturation} onChange={e=>setSaturation(Number(e.target.value))} style={{width:100}}/>
+            </label>
+            <label style={{color:"rgba(255,255,255,0.7)",fontSize:12,display:"flex",alignItems:"center",gap:6}}>Blur
+              <input type="range" min={0} max={8} value={blur} onChange={e=>setBlur(Number(e.target.value))} style={{width:100}}/>
+            </label>
+            <button onClick={() => { setBrightness(100); setContrast(100); setSaturation(100); setBlur(0); }}
+              style={{color:"white",fontSize:12,background:"transparent",border:"1px solid rgba(255,255,255,0.3)",borderRadius:6,padding:"4px 10px",cursor:"pointer"}}>Reset</button>
+          </>
+        )}
+        {tab === "transform" && (
+          <>
+            <button onClick={() => rotate(-1)} title="Rotate left" style={{color:"white",background:"transparent",border:"1px solid rgba(255,255,255,0.3)",borderRadius:6,padding:6,cursor:"pointer"}}><RotateCcw className="h-4 w-4"/></button>
+            <button onClick={() => rotate(1)} title="Rotate right" style={{color:"white",background:"transparent",border:"1px solid rgba(255,255,255,0.3)",borderRadius:6,padding:6,cursor:"pointer"}}><RotateCw className="h-4 w-4"/></button>
+            <button onClick={() => flip("h")} title="Flip horizontal" style={{color:"white",background:"transparent",border:"1px solid rgba(255,255,255,0.3)",borderRadius:6,padding:6,cursor:"pointer"}}><FlipHorizontal className="h-4 w-4"/></button>
+            <button onClick={() => flip("v")} title="Flip vertical" style={{color:"white",background:"transparent",border:"1px solid rgba(255,255,255,0.3)",borderRadius:6,padding:6,cursor:"pointer"}}><FlipVertical className="h-4 w-4"/></button>
+          </>
+        )}
+        {tab === "crop" && (
+          <>
+            <span style={{color:"rgba(255,255,255,0.6)",fontSize:12}}>Drag on the image to select a crop area</span>
+            <button onClick={applyCrop} style={{background:"white",color:"black",fontSize:12,fontWeight:600,border:"none",borderRadius:6,padding:"5px 12px",cursor:"pointer"}}>Apply Crop</button>
+            <button onClick={() => setCropRect(null)} style={{color:"white",fontSize:12,background:"transparent",border:"1px solid rgba(255,255,255,0.3)",borderRadius:6,padding:"5px 12px",cursor:"pointer"}}>Clear</button>
+          </>
+        )}
+        {tab === "draw" && (
+          <>
+            {toolBtn("pen", <Pencil className="h-4 w-4"/>)}
+            {toolBtn("highlighter", <Highlighter className="h-4 w-4"/>)}
+            {toolBtn("eraser", <Eraser className="h-4 w-4"/>)}
+            {toolBtn("rect", <Square className="h-4 w-4"/>)}
+            {toolBtn("circle", <Circle className="h-4 w-4"/>)}
+            {toolBtn("arrow", <ArrowUpRight className="h-4 w-4"/>)}
+            {toolBtn("text", <Type className="h-4 w-4"/>)}
+            <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.2)" }} />
+            <input type="color" value={color} onChange={e=>setColor(e.target.value)} style={{width:28,height:28,borderRadius:4,cursor:"pointer",border:"none"}}/>
+            <label style={{color:"rgba(255,255,255,0.6)",fontSize:12,display:"flex",alignItems:"center",gap:6}}>Size
+              <input type="range" min={1} max={20} value={strokeWidth} onChange={e=>setStrokeWidth(Number(e.target.value))} style={{width:80}}/>
+            </label>
+            {tool === "text" && textPos && (
+              <>
+                <input autoFocus value={textInput} onChange={e=>setTextInput(e.target.value)}
+                  onKeyDown={e=>e.key==="Enter"&&placeText()}
+                  placeholder="Type text…"
+                  style={{background:"rgba(255,255,255,0.1)",color:"white",border:"1px solid rgba(255,255,255,0.2)",borderRadius:6,padding:"4px 10px",fontSize:13,outline:"none",width:160}}/>
+                <button onClick={placeText} style={{background:"white",color:"black",fontSize:12,fontWeight:600,border:"none",borderRadius:6,padding:"4px 10px",cursor:"pointer"}}>Place</button>
+              </>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Canvas stage */}
+      <div style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+        <div style={{ position: "relative", transform: `scale(${zoom})`, transformOrigin: "center center" }}>
+          <div style={{ position: "relative", filter: cssFilter }}>
+            <canvas ref={baseCanvasRef} style={{ display: "block", maxWidth: "80vw", maxHeight: "70vh", border: "2px solid rgba(255,255,255,0.15)", borderRadius: 4 }} />
+            <canvas ref={overlayCanvasRef}
+              style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%",
+                cursor: tab==="draw" ? (tool==="eraser"?"cell":tool==="text"?"text":"crosshair") : "default" }}
+              onPointerDown={onOverlayDown} onPointerMove={onOverlayMove} onPointerUp={onOverlayUp} onPointerLeave={onOverlayUp} />
+            {tab === "crop" && (
+              <div style={{ position: "absolute", inset: 0, cursor: "crosshair" }}
+                onPointerDown={onCropDown} onPointerMove={onCropMove} onPointerUp={onCropUp} onPointerLeave={onCropUp}>
+                {cropCss && (
+                  <div style={{ position: "absolute", left: cropCss.x, top: cropCss.y, width: cropCss.w, height: cropCss.h,
+                    border: "2px dashed #fff", background: "rgba(255,255,255,0.15)", pointerEvents: "none" }} />
+                )}
+              </div>
+            )}
+          </div>
         </div>
-      )}
-      {/* Canvas fills remaining */}
-      <div style={{flex:1,overflow:"auto",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-        <canvas ref={canvasRef}
-          style={{maxWidth:"100%",maxHeight:"100%",border:"2px solid rgba(255,255,255,0.15)",borderRadius:4,
-            cursor: tool==="eraser"?"cell":tool==="text"?"text":"crosshair"}}
-          onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}/>
+        {!canvasReady && <span style={{ color: "white", fontSize: 13 }}>Loading image…</span>}
       </div>
     </div>
   );
@@ -200,6 +500,7 @@ export default function DocumentEditorPage() {
   const { profile } = useAuth();
   const editorRef  = useRef<HTMLDivElement>(null);
   const wordRef    = useRef<HTMLInputElement>(null);
+  const pdfRef     = useRef<HTMLInputElement>(null);
   const imgRef     = useRef<HTMLInputElement>(null);
   const saveTimer  = useRef<NodeJS.Timeout|null>(null);
 
@@ -207,7 +508,6 @@ export default function DocumentEditorPage() {
   const [selectedDoc, setSelectedDoc] = useState<Doc|null>(null);
   const [title, setTitle]             = useState("Untitled Document");
   const [saving, setSaving]           = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [importing, setImporting]     = useState(false);
 
   const [deleteOpen, setDeleteOpen]     = useState(false);
@@ -220,8 +520,16 @@ export default function DocumentEditorPage() {
   const [fontFamily, setFontFamily] = useState("Arial");
 
   const [showTableModal, setShowTableModal] = useState(false);
-  const [annotateImg, setAnnotateImg]       = useState<string|null>(null);
-  const [annotateImgEl, setAnnotateImgEl]   = useState<HTMLImageElement|null>(null);
+  const [editingImgEl, setEditingImgEl]     = useState<HTMLImageElement|null>(null);
+  const [editingImgSrc, setEditingImgSrc]   = useState<string|null>(null);
+
+  /* ── Document drawer (replaces old fixed sidebar) ── */
+  const [drawerOpen, setDrawerOpen]   = useState(false);
+  const [docSearch, setDocSearch]     = useState("");
+  const [docSort, setDocSort]         = useState<"recent"|"name">("recent");
+  const [renamingId, setRenamingId]   = useState<string|null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const dragStartX = useRef<number|null>(null);
 
   /* ── Load docs ── */
   const loadDocs = useCallback(async () => {
@@ -233,56 +541,90 @@ export default function DocumentEditorPage() {
 
   useEffect(() => { loadDocs(); }, [loadDocs]);
 
-  /* ── Image click → context menu ── */
+  const filteredSortedDocs = useMemo(() => {
+    let list = docs;
+    if (docSearch.trim()) {
+      const q = docSearch.trim().toLowerCase();
+      list = list.filter(d => d.title.toLowerCase().includes(q));
+    }
+    list = [...list];
+    if (docSort === "name") list.sort((a,b) => a.title.localeCompare(b.title));
+    else list.sort((a,b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+    return list;
+  }, [docs, docSearch, docSort]);
+
+  /* ── Selection persistence ──
+     contentEditable loses its Range whenever focus moves to a modal, an
+     <Input>, or a toolbar button. We continuously track the last valid
+     range inside the editor and restore it before any insert action, so
+     "Insert Table" / "Insert Image" / "Insert Link" always land at the
+     right cursor position instead of silently failing. */
+  const savedRangeRef = useRef<Range | null>(null);
+
+  useEffect(() => {
+    const handler = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      if (editorRef.current && editorRef.current.contains(range.commonAncestorContainer)) {
+        savedRangeRef.current = range.cloneRange();
+      }
+    };
+    document.addEventListener("selectionchange", handler);
+    return () => document.removeEventListener("selectionchange", handler);
+  }, []);
+
+  const restoreSelection = (): Range | null => {
+    const editor = editorRef.current;
+    if (!editor) return null;
+    editor.focus();
+    const sel = window.getSelection();
+    if (!sel) return null;
+    if (savedRangeRef.current && editor.contains(savedRangeRef.current.startContainer)) {
+      sel.removeAllRanges();
+      sel.addRange(savedRangeRef.current);
+      return savedRangeRef.current;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return range;
+  };
+
+  /* ── Image click → open full editor directly (mobile-gallery style) ── */
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
     const onClick = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
-      if (t.tagName === "IMG") showImgMenu(t as HTMLImageElement, e.clientX, e.clientY);
+      if (t.tagName === "IMG") {
+        setEditingImgEl(t as HTMLImageElement);
+        setEditingImgSrc((t as HTMLImageElement).src);
+      }
     };
     editor.addEventListener("click", onClick);
     return () => editor.removeEventListener("click", onClick);
   }, [selectedDoc]);
 
-  const showImgMenu = (img: HTMLImageElement, x: number, y: number) => {
-    document.getElementById("_img_ctx")?.remove();
-    const menu = document.createElement("div");
-    menu.id = "_img_ctx";
-    Object.assign(menu.style, {
-      position:"fixed", top:`${y}px`, left:`${x}px`, zIndex:"9999",
-      background:"white", border:"1px solid #e5e7eb", borderRadius:"10px",
-      boxShadow:"0 8px 24px rgba(0,0,0,0.15)", padding:"4px", minWidth:"170px",
-    });
-    const items = [
-      { label:"✏️  Draw / Annotate", fn:() => { setAnnotateImgEl(img); setAnnotateImg(img.src); } },
-      { label:"↔️  Resize Image",    fn:() => resizeImg(img) },
-      { label:"🗑️  Delete Image",    fn:() => { img.remove(); triggerSave(); } },
-    ];
-    items.forEach(({label,fn}) => {
-      const b = document.createElement("button");
-      b.textContent = label;
-      Object.assign(b.style, {display:"block",width:"100%",textAlign:"left",
-        padding:"8px 14px",fontSize:"13px",border:"none",background:"none",cursor:"pointer",borderRadius:"7px"});
-      b.onmouseenter = () => { b.style.background="#f3f4f6"; };
-      b.onmouseleave = () => { b.style.background="none"; };
-      b.onclick = () => { fn(); menu.remove(); };
-      menu.appendChild(b);
-    });
-    document.body.appendChild(menu);
-    const close = (e: MouseEvent) => {
-      if (!menu.contains(e.target as Node)) { menu.remove(); document.removeEventListener("mousedown", close); }
-    };
-    setTimeout(() => document.addEventListener("mousedown", close), 100);
+  const saveImageEdit = (dataUrl: string) => {
+    if (editingImgEl) { editingImgEl.src = dataUrl; triggerSave(); toast.success("Image updated!"); }
+    setEditingImgEl(null); setEditingImgSrc(null);
   };
-
-  const resizeImg = (img: HTMLImageElement) => {
-    const w = prompt("Enter width in px:", String(img.width || img.naturalWidth || 300));
-    if (!w) return;
-    const ratio = (img.naturalHeight || img.height) / (img.naturalWidth || img.width || 300);
-    img.style.width  = w + "px";
-    img.style.height = Math.round(Number(w) * ratio) + "px";
-    triggerSave();
+  const deleteImageEdit = () => {
+    if (editingImgEl) { editingImgEl.remove(); triggerSave(); toast.success("Image removed"); }
+    setEditingImgEl(null); setEditingImgSrc(null);
+  };
+  const replaceImageEdit = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = ev => {
+      if (editingImgEl) {
+        editingImgEl.src = ev.target?.result as string;
+        setEditingImgSrc(ev.target?.result as string);
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   /* ── Select doc ── */
@@ -306,6 +648,30 @@ export default function DocumentEditorPage() {
     toast.success("New document created!");
     await loadDocs();
     selectDoc(data as Doc);
+  };
+
+  /* ── Duplicate doc ── */
+  const duplicateDoc = async (doc: Doc) => {
+    if (!profile) return;
+    const {data, error} = await supabase.from("user_documents")
+      .insert({user_id:profile.id, title:doc.title + " (Copy)", content:doc.content})
+      .select("*").single();
+    if (error) return toast.error(error.message);
+    toast.success("Document duplicated!");
+    await loadDocs();
+    selectDoc(data as Doc);
+  };
+
+  /* ── Rename doc (inline, from drawer) ── */
+  const startRename = (doc: Doc) => { setRenamingId(doc.id); setRenameValue(doc.title); };
+  const commitRename = async (doc: Doc) => {
+    const newTitle = renameValue.trim() || doc.title;
+    setRenamingId(null);
+    if (newTitle === doc.title) return;
+    const {error} = await supabase.from("user_documents").update({title:newTitle}).eq("id", doc.id);
+    if (error) return toast.error(error.message);
+    setDocs(prev => prev.map(d => d.id===doc.id ? {...d, title:newTitle} : d));
+    if (selectedDoc?.id === doc.id) setTitle(newTitle);
   };
 
   /* ── Auto save ── */
@@ -341,9 +707,10 @@ export default function DocumentEditorPage() {
 
   /* ── Format commands ── */
   const exec = (cmd: string, val?: string) => {
-    editorRef.current?.focus();
+    restoreSelection();
     document.execCommand(cmd, false, val);
     updateFormats();
+    triggerSave();
   };
 
   const updateFormats = () => {
@@ -364,16 +731,18 @@ export default function DocumentEditorPage() {
   };
 
   const applyBlock = (tag: string) => {
-    editorRef.current?.focus();
+    restoreSelection();
     document.execCommand("formatBlock", false, `<${tag}>`);
     updateFormats(); triggerSave();
   };
 
-  /* ── Insert Table ── */
+  /* ── Insert Table (fixed: restores the saved cursor position, since the
+     dialog's own inputs steal the browser's live selection) ── */
   const insertTable = (rows: number, cols: number) => {
     const editor = editorRef.current;
     if (!editor) return;
-    editor.focus();
+    const range = restoreSelection();
+    if (!range) return;
 
     let html = `<br><table style="border-collapse:collapse;width:100%;margin:8px 0;table-layout:fixed;">`;
     for (let r = 0; r < rows; r++) {
@@ -389,18 +758,19 @@ export default function DocumentEditorPage() {
     }
     html += "</table><br>";
 
-    // insert at cursor
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0) {
-      const range = sel.getRangeAt(0);
-      range.deleteContents();
-      const frag = range.createContextualFragment(html);
-      range.insertNode(frag);
-      range.collapse(false);
+    const sel = window.getSelection()!;
+    const liveRange = sel.rangeCount > 0 ? sel.getRangeAt(0) : range;
+    liveRange.deleteContents();
+    const frag = liveRange.createContextualFragment(html);
+    const lastNode = frag.lastChild;
+    liveRange.insertNode(frag);
+    if (lastNode) {
+      const after = document.createRange();
+      after.setStartAfter(lastNode);
+      after.collapse(true);
       sel.removeAllRanges();
-      sel.addRange(range);
-    } else {
-      editor.innerHTML += html;
+      sel.addRange(after);
+      savedRangeRef.current = after.cloneRange();
     }
 
     setShowTableModal(false);
@@ -409,26 +779,30 @@ export default function DocumentEditorPage() {
   };
 
   /* ── Insert link ── */
-  const insertLink = () => { const u = prompt("Enter URL:"); if (u) exec("createLink", u); };
+  const insertLink = () => {
+    const u = prompt("Enter URL:");
+    if (u) exec("createLink", u);
+  };
 
-  /* ── Insert image(s) ── */
+  /* ── Insert image(s) at cursor ── */
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
+    const range = restoreSelection();
     files.forEach(file => {
       const reader = new FileReader();
       reader.onload = ev => {
         const src = ev.target?.result as string;
         const editor = editorRef.current;
-        if (!editor) return;
+        if (!editor || !range) return;
         editor.focus();
         const html = `<img src="${src}" style="max-width:100%;height:auto;display:block;margin:8px 0;cursor:pointer;" />`;
         const sel = window.getSelection();
         if (sel && sel.rangeCount > 0) {
-          const range = sel.getRangeAt(0);
-          const frag = range.createContextualFragment(html);
-          range.insertNode(frag);
-          range.collapse(false);
+          const liveRange = sel.getRangeAt(0);
+          const frag = liveRange.createContextualFragment(html);
+          liveRange.insertNode(frag);
+          liveRange.collapse(false);
         } else {
           editor.innerHTML += html;
         }
@@ -439,7 +813,7 @@ export default function DocumentEditorPage() {
     e.target.value = "";
   };
 
-  /* ── Word import (multi-file, fast) ── */
+  /* ── Word import (multi-file) ── */
   const handleWordUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
@@ -463,11 +837,10 @@ export default function DocumentEditorPage() {
           ]}
         );
 
-        // Fix tables + images in imported HTML
         const parser = new DOMParser();
         const dom = parser.parseFromString(result.value, "text/html");
         dom.querySelectorAll("table").forEach(t => {
-          t.style.cssText = "border-collapse:collapse;width:100%;margin:8px 0;";
+          (t as HTMLElement).style.cssText = "border-collapse:collapse;width:100%;margin:8px 0;";
         });
         dom.querySelectorAll("td,th").forEach(c => {
           (c as HTMLElement).style.cssText += ";border:1.5px solid #9ca3af;padding:6px 10px;vertical-align:top;word-break:break-word;";
@@ -498,10 +871,60 @@ export default function DocumentEditorPage() {
     setImporting(false);
   };
 
-  /* ── Annotation save ── */
-  const saveAnnotation = (dataUrl: string) => {
-    if (annotateImgEl) { annotateImgEl.src = dataUrl; triggerSave(); toast.success("Annotation saved!"); }
-    setAnnotateImg(null); setAnnotateImgEl(null);
+  /* ── PDF import ──
+     Renders every page through pdf.js's own renderer onto a canvas, then
+     drops each page in as a full-width image with a page break after it.
+     This is the only way to get a genuine pixel-for-pixel match to the
+     source PDF — fonts, tables, borders, colors, multi-column layouts,
+     stamps, everything — because it IS the rendered PDF page, not a
+     re-interpretation of its text. The trade-off: page content becomes an
+     image, not editable text. If you need the text itself to stay
+     editable, that requires a separate "extract text" pass with much
+     lower layout fidelity — say the word if you want that added as an
+     alternate import mode. */
+  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    e.target.value = "";
+
+    if (typeof pdfjsLib === "undefined") {
+      toast.error("PDF renderer not loaded — please refresh the page.");
+      return;
+    }
+
+    setImporting(true);
+    for (const file of files) {
+      try {
+        const buf = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+        let pagesHtml = "";
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale: 2 });
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext("2d")!;
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+          pagesHtml += `<div class="pdf-page" style="page-break-after:always;margin:0 0 16px 0;">` +
+            `<img src="${dataUrl}" style="width:100%;display:block;" />` +
+          `</div>`;
+        }
+        const newTitle = file.name.replace(/\.pdf$/i, "");
+        const {data, error} = await supabase.from("user_documents")
+          .insert({user_id: profile?.id, title: newTitle, content: pagesHtml})
+          .select("*").single();
+        if (error) throw error;
+
+        await loadDocs();
+        selectDoc(data as Doc);
+        toast.success(`"${newTitle}" imported (${pdf.numPages} page${pdf.numPages>1?"s":""})`);
+      } catch (err: any) {
+        toast.error(`Failed: "${file.name}" — ${err?.message || "Unknown error"}`);
+      }
+    }
+    setImporting(false);
   };
 
   /* ── Export ── */
@@ -511,7 +934,9 @@ export default function DocumentEditorPage() {
     table{border-collapse:collapse;width:100%;margin:8px 0}td,th{border:1.5px solid #9ca3af;padding:6px 10px;vertical-align:top}
     th{background:#f3f4f6;font-weight:600}
     ul{list-style:disc;padding-left:1.5em}ol{list-style:decimal;padding-left:1.5em}
-    img{max-width:100%;height:auto}@media print{body{padding:10mm}}
+    img{max-width:100%;height:auto}
+    .pdf-page{page-break-after:always;}
+    @media print{body{padding:10mm}}
   `;
   const fullHtml = (body: string) =>
     `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title><style>${exportCSS}</style></head><body>${body}</body></html>`;
@@ -537,9 +962,14 @@ export default function DocumentEditorPage() {
   return (
     <>
       {showTableModal && <InsertTableModal onInsert={insertTable} onClose={() => setShowTableModal(false)}/>}
-      {annotateImg && annotateImgEl && (
-        <ImageAnnotateModal src={annotateImg} onSave={saveAnnotation}
-          onClose={() => { setAnnotateImg(null); setAnnotateImgEl(null); }}/>
+      {editingImgEl && editingImgSrc && (
+        <ImageEditorModal
+          src={editingImgSrc}
+          onSave={saveImageEdit}
+          onDelete={deleteImageEdit}
+          onReplace={replaceImageEdit}
+          onClose={() => { setEditingImgEl(null); setEditingImgSrc(null); }}
+        />
       )}
 
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
@@ -556,58 +986,105 @@ export default function DocumentEditorPage() {
       </AlertDialog>
 
       <input ref={wordRef} type="file" accept=".doc,.docx" multiple className="hidden" onChange={handleWordUpload}/>
+      <input ref={pdfRef}  type="file" accept=".pdf"       multiple className="hidden" onChange={handlePdfUpload}/>
       <input ref={imgRef}  type="file" accept="image/*"    multiple className="hidden" onChange={handleImageUpload}/>
 
-      <div className="flex h-[calc(100vh-56px)] overflow-hidden bg-background">
+      {/* ── Drag/click arrow tab — replaces the old Add Document / Upload buttons ── */}
+      <div
+        onClick={() => setDrawerOpen(o => !o)}
+        onPointerDown={(e) => { dragStartX.current = e.clientX; }}
+        onPointerMove={(e) => {
+          if (dragStartX.current !== null && e.clientX - dragStartX.current > 24) {
+            setDrawerOpen(true); dragStartX.current = null;
+          }
+        }}
+        onPointerUp={() => { dragStartX.current = null; }}
+        className="fixed left-0 top-1/2 -translate-y-1/2 z-40 flex items-center justify-center w-4 h-16 bg-primary/90 hover:bg-primary rounded-r-lg cursor-grab active:cursor-grabbing shadow-md transition-colors"
+        title="Documents"
+      >
+        <ChevronRight className={cn("h-4 w-4 text-primary-foreground transition-transform", drawerOpen && "rotate-180")}/>
+      </div>
 
-        {/* ── Sidebar ── */}
-        <div className={cn("flex flex-col border-r border-border bg-card transition-all duration-200 shrink-0 overflow-hidden",
-          sidebarOpen ? "w-52" : "w-0")}>
-          <div className="flex-1 overflow-y-auto p-2 space-y-0.5 pt-2">
-            {docs.length === 0 && (
-              <p className="text-xs text-muted-foreground text-center py-6">No documents yet</p>
-            )}
-            {docs.map(doc => (
-              <div key={doc.id} onClick={() => selectDoc(doc)}
-                className={cn("flex items-center justify-between rounded-lg px-2 py-1.5 cursor-pointer group transition-colors",
-                  selectedDoc?.id === doc.id ? "bg-primary/10 text-primary" : "hover:bg-muted")}>
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <FileText className="h-3.5 w-3.5 shrink-0"/>
+      {/* ── Backdrop ── */}
+      {drawerOpen && (
+        <div className="fixed inset-0 z-30 bg-black/20" onClick={() => setDrawerOpen(false)} />
+      )}
+
+      {/* ── Document drawer ── */}
+      <div className={cn(
+        "fixed left-0 top-0 h-full w-72 bg-card border-r border-border z-40 flex flex-col shadow-2xl transition-transform duration-200",
+        drawerOpen ? "translate-x-0" : "-translate-x-full"
+      )}>
+        <div className="p-3 border-b border-border space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Documents</h3>
+            <button onClick={() => setDrawerOpen(false)} className="p-1 hover:bg-muted rounded"><X className="h-4 w-4"/></button>
+          </div>
+          <div className="flex gap-1.5">
+            <Button size="sm" className="flex-1 gap-1 h-7 text-xs" onClick={() => { createNewDoc(); setDrawerOpen(false); }}>
+              <Plus className="h-3.5 w-3.5"/>New
+            </Button>
+            <Button size="sm" variant="outline" className="flex-1 gap-1 h-7 text-xs" onClick={() => wordRef.current?.click()} disabled={importing}>
+              <Upload className="h-3.5 w-3.5"/>Word
+            </Button>
+            <Button size="sm" variant="outline" className="flex-1 gap-1 h-7 text-xs" onClick={() => pdfRef.current?.click()} disabled={importing}>
+              <FileUp className="h-3.5 w-3.5"/>PDF
+            </Button>
+          </div>
+          <div className="relative">
+            <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground"/>
+            <Input value={docSearch} onChange={e=>setDocSearch(e.target.value)} placeholder="Search documents…" className="h-7 text-xs pl-7"/>
+          </div>
+          <button onClick={() => setDocSort(s => s==="recent"?"name":"recent")}
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+            <ArrowUpDown className="h-3 w-3"/> Sort: {docSort==="recent"?"Recent":"Name"}
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+          {filteredSortedDocs.length === 0 && (
+            <p className="text-xs text-muted-foreground text-center py-6">
+              {docSearch ? "No documents match your search" : "No documents yet"}
+            </p>
+          )}
+          {filteredSortedDocs.map(doc => (
+            <div key={doc.id} onClick={() => { selectDoc(doc); setDrawerOpen(false); }}
+              className={cn("flex items-center justify-between rounded-lg px-2 py-1.5 cursor-pointer group transition-colors",
+                selectedDoc?.id === doc.id ? "bg-primary/10 text-primary" : "hover:bg-muted")}>
+              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                <FileText className="h-3.5 w-3.5 shrink-0"/>
+                {renamingId === doc.id ? (
+                  <Input autoFocus value={renameValue} onClick={e => e.stopPropagation()}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onBlur={() => commitRename(doc)}
+                    onKeyDown={e => { if (e.key==="Enter") commitRename(doc); if (e.key==="Escape") setRenamingId(null); }}
+                    className="h-6 text-xs px-1"/>
+                ) : (
                   <span className="text-xs truncate">{doc.title}</span>
-                </div>
-                <button onClick={e => { e.stopPropagation(); setDeleteTarget(doc); setDeleteOpen(true); }}
-                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-destructive/10">
+                )}
+              </div>
+              <div className="flex items-center opacity-0 group-hover:opacity-100 shrink-0">
+                <button onClick={e => { e.stopPropagation(); startRename(doc); }} className="p-1 rounded hover:bg-muted" title="Rename">
+                  <Pencil className="h-3 w-3"/>
+                </button>
+                <button onClick={e => { e.stopPropagation(); duplicateDoc(doc); }} className="p-1 rounded hover:bg-muted" title="Duplicate">
+                  <Copy className="h-3 w-3"/>
+                </button>
+                <button onClick={e => { e.stopPropagation(); setDeleteTarget(doc); setDeleteOpen(true); }} className="p-1 rounded hover:bg-destructive/10" title="Delete">
                   <Trash2 className="h-3 w-3 text-destructive"/>
                 </button>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
+      </div>
 
-        {/* ── Main editor column ── */}
+      <div className="flex h-[calc(100vh-56px)] overflow-hidden bg-background">
+        {/* ── Main editor column (now full width — drawer is an overlay) ── */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
 
           {/* ══ TOOLBAR ══ */}
           <div className="flex items-center gap-1 flex-wrap px-2 py-1.5 border-b border-border bg-card select-none">
-
-            {/* Sidebar toggle */}
-            <button onClick={() => setSidebarOpen(o => !o)} className={tb(false)} title="Toggle sidebar">
-              {sidebarOpen ? <ChevronLeft className="h-4 w-4"/> : <ChevronRight className="h-4 w-4"/>}
-            </button>
-
-            {/* New doc */}
-            <button onClick={createNewDoc} className={tb(false)} title="New Document">
-              <FilePlus className="h-4 w-4"/>
-            </button>
-
-            {/* Import Word */}
-            <button onClick={() => wordRef.current?.click()} disabled={importing}
-              className={cn(tb(false), "w-auto px-2 gap-1 text-xs font-medium")} title="Import Word (.docx)">
-              <Upload className="h-3.5 w-3.5 shrink-0"/>
-              <span>{importing ? "Importing…" : "Import"}</span>
-            </button>
-
-            <div className="w-px h-5 bg-border mx-0.5"/>
 
             {/* Save */}
             <button onClick={handleSave} disabled={saving || !selectedDoc}
@@ -664,13 +1141,14 @@ export default function DocumentEditorPage() {
             {/* Font size */}
             <Select value={fontSize} onValueChange={v => {
               setFontSize(v);
-              editorRef.current?.focus();
+              restoreSelection();
               const sel = window.getSelection();
               if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
                 const range = sel.getRangeAt(0);
                 const span  = document.createElement("span");
                 span.style.fontSize = v + "px";
                 try { range.surroundContents(span); } catch {}
+                triggerSave();
               }
             }}>
               <SelectTrigger className="h-7 w-14 text-xs"><SelectValue/></SelectTrigger>
@@ -740,7 +1218,7 @@ export default function DocumentEditorPage() {
             <div className="w-px h-5 bg-border mx-0.5"/>
 
             {/* Table */}
-            <button className={tb(false)} onClick={() => setShowTableModal(true)} title="Insert Table"><Table className="h-4 w-4"/></button>
+            <button className={tb(false)} onClick={() => { restoreSelection(); setShowTableModal(true); }} title="Insert Table"><Table className="h-4 w-4"/></button>
 
             {/* Image */}
             <button className={tb(false)} onClick={() => imgRef.current?.click()} title="Insert Image(s)"><ImageIcon className="h-4 w-4"/></button>
@@ -779,6 +1257,7 @@ export default function DocumentEditorPage() {
                 #ld-editor img:hover{outline:2px solid #6366f1;outline-offset:2px;}
                 #ld-editor a{color:#2563eb;text-decoration:underline;}
                 #ld-editor p{margin:2px 0;min-height:1.4em;}
+                #ld-editor .pdf-page{margin:0 0 16px 0;box-shadow:0 1px 4px rgba(0,0,0,0.15);}
               `}</style>
 
               {/* Full-width white page — no narrow A4 box */}
@@ -803,11 +1282,14 @@ export default function DocumentEditorPage() {
             <div className="flex-1 flex flex-col items-center justify-center text-center p-8" style={{background:"#e8eaed"}}>
               <FileText className="h-16 w-16 text-muted-foreground mb-4 opacity-40"/>
               <h2 className="text-xl font-semibold mb-2">No document selected</h2>
-              <p className="text-muted-foreground mb-6 text-sm">Select a document from the sidebar or create a new one</p>
+              <p className="text-muted-foreground mb-6 text-sm">Drag the arrow on the left edge to open your documents, or start a new one</p>
               <div className="flex gap-3 flex-wrap justify-center">
                 <Button onClick={createNewDoc} className="gap-2"><Plus className="h-4 w-4"/>New Document</Button>
                 <Button variant="outline" className="gap-2" onClick={() => wordRef.current?.click()}>
-                  <Upload className="h-4 w-4"/>Import Word File
+                  <Upload className="h-4 w-4"/>Import Word
+                </Button>
+                <Button variant="outline" className="gap-2" onClick={() => pdfRef.current?.click()}>
+                  <FileUp className="h-4 w-4"/>Import PDF
                 </Button>
               </div>
             </div>
