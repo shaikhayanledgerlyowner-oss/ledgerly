@@ -518,6 +518,7 @@ export default function DocumentEditorPage() {
   const [activeFormats, setActiveFormats]     = useState<Record<string,boolean>>({});
   const [fontSize, setFontSize]     = useState("14");
   const [fontFamily, setFontFamily] = useState("Arial");
+  const [pageZoom, setPageZoom]     = useState(100); // % zoom for the document page, Word-style
 
   const [showTableModal, setShowTableModal] = useState(false);
   const [editingImgEl, setEditingImgEl]     = useState<HTMLImageElement|null>(null);
@@ -1135,6 +1136,14 @@ export default function DocumentEditorPage() {
 
             <div className="w-px h-5 bg-border mx-0.5"/>
 
+            {/* Zoom */}
+            <button className={tb(false)} onClick={() => setPageZoom(z => Math.max(50, z - 10))} title="Zoom out"><ZoomOut className="h-4 w-4"/></button>
+            <button onClick={() => setPageZoom(100)} title="Reset zoom"
+              style={{fontSize:12,minWidth:40,textAlign:"center",background:"transparent",border:"none",cursor:"pointer"}}>{pageZoom}%</button>
+            <button className={tb(false)} onClick={() => setPageZoom(z => Math.min(200, z + 10))} title="Zoom in"><ZoomIn className="h-4 w-4"/></button>
+
+            <div className="w-px h-5 bg-border mx-0.5"/>
+
             {/* Undo / Redo */}
             <button className={tb(false)} onClick={() => exec("undo")} title="Undo"><Undo className="h-4 w-4"/></button>
             <button className={tb(false)} onClick={() => exec("redo")} title="Redo"><Redo className="h-4 w-4"/></button>
@@ -1284,22 +1293,32 @@ export default function DocumentEditorPage() {
                 #ld-editor .pdf-page{margin:0 0 16px 0;box-shadow:0 1px 4px rgba(0,0,0,0.15);}
               `}</style>
 
-              {/* Full-width white page — no narrow A4 box */}
-              <div style={{
-                background:"#ffffff",
-                minHeight:"100%",
-                padding:"24px 48px",
-                fontFamily: fontFamily,
-                fontSize: fontSize + "px",
-                lineHeight:"1.6",
-                wordBreak:"break-word",
-                boxSizing:"border-box",
-              }}>
-                <div id="ld-editor" ref={editorRef}
-                  contentEditable suppressContentEditableWarning
-                  onInput={triggerSave} onKeyUp={updateFormats} onMouseUp={updateFormats}
-                  style={{minHeight:"80vh"}}
-                />
+              {/* Word-style page: fixed width, centered, scales with pageZoom */}
+              <div style={{ display:"flex", justifyContent:"center", padding:"32px 16px" }}>
+                <div style={{
+                  transform: `scale(${pageZoom / 100})`,
+                  transformOrigin: "top center",
+                  transition: "transform 0.1s ease-out",
+                }}>
+                  <div style={{
+                    background:"#ffffff",
+                    width:"816px",        // ~8.5in @ 96dpi, standard page width like Word
+                    minHeight:"1056px",   // ~11in @ 96dpi
+                    padding:"56px 64px",
+                    boxShadow:"0 1px 6px rgba(0,0,0,0.15)",
+                    fontFamily: fontFamily,
+                    fontSize: fontSize + "px",
+                    lineHeight:"1.6",
+                    wordBreak:"break-word",
+                    boxSizing:"border-box",
+                  }}>
+                    <div id="ld-editor" ref={editorRef}
+                      contentEditable suppressContentEditableWarning
+                      onInput={triggerSave} onKeyUp={updateFormats} onMouseUp={updateFormats}
+                      style={{minHeight:"900px"}}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           ) : (
