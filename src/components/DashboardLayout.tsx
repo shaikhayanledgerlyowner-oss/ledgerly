@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   LayoutDashboard, Table2, FileText, CreditCard, Settings, Bell, LogOut,
-  BarChart3, Shield, Wallet, Menu, BookOpen,
+  BarChart3, Shield, Wallet, Menu, BookOpen, FilePen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
@@ -18,6 +18,7 @@ const navItems = [
   { to: "/dashboard/tables", icon: Table2, label: "Tables" },
   { to: "/dashboard/analytics", icon: BarChart3, label: "Analytics" },
   { to: "/dashboard/invoices", icon: FileText, label: "Documents" },
+  { to: "/dashboard/document-editor", icon: FilePen, label: "Doc Editor" },
   { to: "/dashboard/pricing", icon: CreditCard, label: "Pricing" },
   { to: "/dashboard/settings", icon: Settings, label: "Settings" },
 ];
@@ -33,6 +34,7 @@ const pageTitles: Record<string, string> = {
   "/dashboard/tables": "Tables",
   "/dashboard/analytics": "Analytics",
   "/dashboard/invoices": "Documents",
+  "/dashboard/document-editor": "Doc Editor",
   "/dashboard/pricing": "Pricing",
   "/dashboard/notifications": "Notifications",
   "/dashboard/settings": "Settings",
@@ -47,12 +49,10 @@ function TrialExpiredWall() {
   const navigate = useNavigate();
   return (
     <div className="flex flex-col items-center justify-center min-h-[72vh] text-center px-6">
-      {/* Lock icon */}
       <div className="w-20 h-20 rounded-full bg-gradient-to-br from-indigo-100 to-purple-100 flex items-center justify-center mb-6 shadow-inner">
         <span className="text-4xl">🔒</span>
       </div>
 
-      {/* Heading */}
       <h2 className="text-2xl font-bold text-gray-900 mb-2">Your Free Trial Has Ended</h2>
       <p className="text-muted-foreground text-sm max-w-md mb-8 leading-relaxed">
         You've used your 7-day free trial. To continue managing your tables, tracking expenses,
@@ -60,7 +60,6 @@ function TrialExpiredWall() {
         Your data is safe and waiting for you.
       </p>
 
-      {/* Feature list */}
       <div className="grid grid-cols-2 gap-2 text-xs text-left mb-8 max-w-sm w-full">
         {[
           "✅ Unlimited Tables & Rows",
@@ -74,7 +73,6 @@ function TrialExpiredWall() {
         ))}
       </div>
 
-      {/* CTA Button */}
       <button
         onClick={() => navigate("/dashboard/pricing")}
         className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-bold px-10 py-3.5 rounded-xl text-sm hover:from-indigo-700 hover:to-purple-700 transition-all shadow-lg shadow-indigo-200 hover:shadow-xl hover:scale-105 active:scale-95"
@@ -238,7 +236,6 @@ export default function DashboardLayout() {
 
       <main className="flex-1 overflow-y-auto">
         <div className="p-4 md:p-6 lg:p-8 w-full">
-          {/* Trial expired check — owner aur premium ke liye bypass */}
           {!isOwner && !isPremium && isTrialExpired && !ALLOWED_EXPIRED.includes(location.pathname)
             ? <TrialExpiredWall />
             : <Outlet />
