@@ -10,41 +10,21 @@ import {
   List, ListOrdered, Undo, Redo, Save, FileText,
   Plus, Trash2, Type, Palette, Link,
   ChevronDown, Download, Table, Image as ImageIcon,
-  Upload, Pencil, ZoomIn, ZoomOut, X
+  Upload, FilePlus, ChevronLeft, ChevronRight
 } from "lucide-react";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
-/* ─── mammoth is loaded via CDN in index.html ─── */
 declare const mammoth: any;
 
 interface Doc {
@@ -55,20 +35,16 @@ interface Doc {
 }
 
 const FONT_SIZES = ["8","10","12","14","16","18","20","24","28","32","36","48","64","72"];
-const FONT_FAMILIES = ["Arial","Times New Roman","Courier New","Georgia","Verdana","Trebuchet MS","Comic Sans MS","Impact"];
+const FONT_FAMILIES = ["Arial","Times New Roman","Courier New","Georgia","Verdana","Trebuchet MS","Impact"];
 const COLORS = [
-  "#000000","#434343","#666666","#999999","#b7b7b7","#cccccc","#d9d9d9","#ffffff",
+  "#000000","#434343","#666666","#999999","#b7b7b7","#cccccc","#ffffff",
   "#ff0000","#ff4500","#ff9900","#ffff00","#00ff00","#00ffff","#0000ff","#9900ff",
   "#ff00ff","#ff69b4","#8b0000","#006400","#00008b","#4b0082","#ff6347","#ffa500",
 ];
 
-/* ── Image Annotation Modal ── */
-function ImageAnnotateModal({
-  src, onSave, onClose,
-}: {
-  src: string;
-  onSave: (dataUrl: string) => void;
-  onClose: () => void;
+/* ─── Image Annotate — full screen overlay ─── */
+function ImageAnnotateModal({ src, onSave, onClose }: {
+  src: string; onSave: (d: string) => void; onClose: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [drawing, setDrawing] = useState(false);
@@ -78,231 +54,139 @@ function ImageAnnotateModal({
   const [textInput, setTextInput] = useState("");
   const [textPos, setTextPos] = useState<{x:number;y:number}|null>(null);
   const lastPos = useRef<{x:number;y:number}|null>(null);
-  const imgRef = useRef<HTMLImageElement|null>(null);
 
   useEffect(() => {
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
-      imgRef.current = img;
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(img, 0, 0);
+      const canvas = canvasRef.current!;
+      canvas.width  = img.naturalWidth  || img.width  || 800;
+      canvas.height = img.naturalHeight || img.height || 600;
+      canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
     };
     img.src = src;
   }, [src]);
 
   const getPos = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current!;
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
+    const c = canvasRef.current!;
+    const r = c.getBoundingClientRect();
     return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
+      x: (e.clientX - r.left) * (c.width  / r.width),
+      y: (e.clientY - r.top)  * (c.height / r.height),
     };
   };
 
-  const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const pos = getPos(e);
-    if (tool === "text") {
-      setTextPos(pos);
-      return;
-    }
-    setDrawing(true);
-    lastPos.current = pos;
+  const onDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (tool === "text") { setTextPos(getPos(e)); return; }
+    setDrawing(true); lastPos.current = getPos(e);
   };
-
-  const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const onMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!drawing || tool === "text") return;
-    const canvas = canvasRef.current!;
-    const ctx = canvas.getContext("2d")!;
-    const pos = getPos(e);
-    ctx.beginPath();
-    ctx.moveTo(lastPos.current!.x, lastPos.current!.y);
-    ctx.lineTo(pos.x, pos.y);
+    const c = canvasRef.current!; const ctx = c.getContext("2d")!;
+    const p = getPos(e);
+    ctx.beginPath(); ctx.moveTo(lastPos.current!.x, lastPos.current!.y); ctx.lineTo(p.x, p.y);
     ctx.strokeStyle = tool === "eraser" ? "#ffffff" : color;
-    ctx.lineWidth = tool === "eraser" ? lineWidth * 5 : lineWidth;
-    ctx.lineCap = "round";
-    ctx.stroke();
-    lastPos.current = pos;
+    ctx.lineWidth   = tool === "eraser" ? lineWidth * 8 : lineWidth * (c.width / c.getBoundingClientRect().width);
+    ctx.lineCap = "round"; ctx.stroke();
+    lastPos.current = p;
   };
-
-  const onMouseUp = () => setDrawing(false);
+  const onUp = () => setDrawing(false);
 
   const placeText = () => {
     if (!textPos || !textInput.trim()) return;
-    const canvas = canvasRef.current!;
-    const ctx = canvas.getContext("2d")!;
-    ctx.font = `${lineWidth * 8 + 10}px Arial`;
-    ctx.fillStyle = color;
+    const ctx = canvasRef.current!.getContext("2d")!;
+    ctx.font = `${lineWidth * 10 + 14}px Arial`; ctx.fillStyle = color;
     ctx.fillText(textInput, textPos.x, textPos.y);
-    setTextInput("");
-    setTextPos(null);
-  };
-
-  const handleSave = () => {
-    const canvas = canvasRef.current!;
-    onSave(canvas.toDataURL("image/png"));
+    setTextInput(""); setTextPos(null);
   };
 
   return (
-    <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl w-full">
-        <DialogHeader>
-          <DialogTitle>Annotate Image</DialogTitle>
-        </DialogHeader>
-        <div className="flex gap-2 flex-wrap items-center border-b pb-2 mb-2">
-          {/* Tool buttons */}
-          {(["pen","text","eraser"] as const).map(t => (
-            <button key={t} onClick={() => setTool(t)}
-              className={cn("px-3 py-1 rounded text-sm font-medium border transition-colors",
-                tool === t ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted"
-              )}>
-              {t === "pen" ? "✏️ Pen" : t === "text" ? "T Text" : "⌫ Eraser"}
-            </button>
-          ))}
-          <div className="w-px h-6 bg-border" />
-          <label className="text-xs text-muted-foreground">Color:</label>
-          <input type="color" value={color} onChange={e => setColor(e.target.value)}
-            className="w-8 h-8 rounded cursor-pointer border border-border" />
-          <label className="text-xs text-muted-foreground">Size:</label>
-          <input type="range" min={1} max={10} value={lineWidth}
-            onChange={e => setLineWidth(Number(e.target.value))} className="w-20" />
+    <div className="fixed inset-0 z-[200] flex flex-col" style={{background:"rgba(0,0,0,0.92)"}}>
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-white/10 flex-wrap shrink-0" style={{background:"#1a1a1a"}}>
+        <span className="text-white font-semibold text-sm mr-2">Annotate Image</span>
+        {(["pen","text","eraser"] as const).map(t => (
+          <button key={t} onClick={() => setTool(t)}
+            style={{padding:"3px 12px",borderRadius:6,fontSize:12,fontWeight:500,border:"1px solid",cursor:"pointer",
+              background: tool===t?"white":"transparent",
+              color: tool===t?"black":"white",
+              borderColor: tool===t?"white":"rgba(255,255,255,0.3)"}}>
+            {t==="pen"?"✏️ Pen":t==="text"?"T Text":"⌫ Eraser"}
+          </button>
+        ))}
+        <div style={{width:1,height:20,background:"rgba(255,255,255,0.2)",margin:"0 4px"}}/>
+        <label style={{color:"rgba(255,255,255,0.6)",fontSize:12}}>Color:</label>
+        <input type="color" value={color} onChange={e=>setColor(e.target.value)}
+          style={{width:28,height:28,borderRadius:4,cursor:"pointer",border:"none"}}/>
+        <label style={{color:"rgba(255,255,255,0.6)",fontSize:12}}>Size:</label>
+        <input type="range" min={1} max={15} value={lineWidth} onChange={e=>setLineWidth(Number(e.target.value))} style={{width:80}}/>
+        <span style={{color:"rgba(255,255,255,0.6)",fontSize:12}}>{lineWidth}</span>
+        <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+          <button onClick={onClose}
+            style={{padding:"4px 12px",borderRadius:6,border:"1px solid rgba(255,255,255,0.3)",
+              color:"white",background:"transparent",cursor:"pointer",fontSize:12}}>Cancel</button>
+          <button onClick={() => onSave(canvasRef.current!.toDataURL("image/png"))}
+            style={{padding:"4px 14px",borderRadius:6,border:"none",
+              background:"white",color:"black",cursor:"pointer",fontSize:12,fontWeight:600}}>Save Annotation</button>
         </div>
-        {/* Text input for text tool */}
-        {tool === "text" && (
-          <div className="flex gap-2 mb-2 items-center">
-            <Input placeholder="Type text, then click on image..."
-              value={textInput} onChange={e => setTextInput(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && placeText()}
-              className="flex-1 text-sm" />
-            <Button size="sm" onClick={placeText}>Place</Button>
-          </div>
-        )}
-        <div className="overflow-auto max-h-[55vh] border rounded">
-          <canvas ref={canvasRef}
-            style={{ cursor: tool === "eraser" ? "cell" : tool === "text" ? "text" : "crosshair",
-              maxWidth: "100%", display: "block" }}
-            onMouseDown={onMouseDown}
-            onMouseMove={onMouseMove}
-            onMouseUp={onMouseUp}
-            onMouseLeave={onMouseUp}
-          />
+      </div>
+      {/* Text input row */}
+      {tool === "text" && (
+        <div style={{display:"flex",gap:8,padding:"6px 16px",background:"#111",alignItems:"center"}}>
+          <input autoFocus value={textInput} onChange={e=>setTextInput(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&placeText()}
+            placeholder="Type text, then click on image…"
+            style={{flex:1,background:"rgba(255,255,255,0.1)",color:"white",
+              border:"1px solid rgba(255,255,255,0.2)",borderRadius:6,padding:"4px 10px",fontSize:13,outline:"none"}}/>
+          <button onClick={placeText}
+            style={{padding:"4px 12px",borderRadius:6,background:"white",border:"none",cursor:"pointer",fontSize:12,fontWeight:600}}>Place</button>
         </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleSave}>Save Annotation</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      )}
+      {/* Canvas fills remaining */}
+      <div style={{flex:1,overflow:"auto",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        <canvas ref={canvasRef}
+          style={{maxWidth:"100%",maxHeight:"100%",border:"2px solid rgba(255,255,255,0.15)",borderRadius:4,
+            cursor: tool==="eraser"?"cell":tool==="text"?"text":"crosshair"}}
+          onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}/>
+      </div>
+    </div>
   );
 }
 
-/* ── Insert Table Modal ── */
-function InsertTableModal({
-  onInsert, onClose,
-}: {
-  onInsert: (rows: number, cols: number) => void;
-  onClose: () => void;
-}) {
+/* ─── Insert Table Modal ─── */
+function InsertTableModal({ onInsert, onClose }: { onInsert:(r:number,c:number)=>void; onClose:()=>void }) {
   const [rows, setRows] = useState(3);
   const [cols, setCols] = useState(3);
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-xs">
+      <DialogContent className="max-w-sm">
         <DialogHeader><DialogTitle>Insert Table</DialogTitle></DialogHeader>
-        <div className="space-y-4 py-2">
-          <div className="flex items-center gap-3">
-            <label className="text-sm w-16">Rows:</label>
-            <Input type="number" min={1} max={20} value={rows}
-              onChange={e => setRows(Number(e.target.value))} className="w-24" />
-          </div>
-          <div className="flex items-center gap-3">
-            <label className="text-sm w-16">Columns:</label>
-            <Input type="number" min={1} max={10} value={cols}
-              onChange={e => setCols(Number(e.target.value))} className="w-24" />
-          </div>
-          {/* Visual preview */}
-          <div className="border rounded p-2 overflow-auto">
-            <table style={{ borderCollapse: "collapse", width: "100%" }}>
-              <tbody>
-                {Array.from({ length: Math.min(rows, 5) }).map((_, r) => (
-                  <tr key={r}>
-                    {Array.from({ length: Math.min(cols, 6) }).map((_, c) => (
-                      <td key={c} style={{ border: "1px solid #ccc", padding: "4px 8px",
-                        background: r === 0 ? "#f0f0f0" : "white", fontSize: 11 }}>
-                        {r === 0 ? `H${c+1}` : "·"}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {rows > 5 && <p className="text-xs text-muted-foreground mt-1">+{rows - 5} more rows...</p>}
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => onInsert(rows, cols)}>Insert Table</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/* ── Image Resize Modal ── */
-function ImageResizeModal({
-  imgEl, onClose,
-}: {
-  imgEl: HTMLImageElement;
-  onClose: () => void;
-}) {
-  const [width, setWidth] = useState(imgEl.width || 300);
-  const [height, setHeight] = useState(imgEl.height || 200);
-  const [locked, setLocked] = useState(true);
-  const origRatio = (imgEl.naturalWidth || imgEl.width) / (imgEl.naturalHeight || imgEl.height);
-
-  const applyResize = () => {
-    imgEl.style.width = width + "px";
-    imgEl.style.height = height + "px";
-    imgEl.width = width;
-    imgEl.height = height;
-    onClose();
-  };
-
-  return (
-    <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-xs">
-        <DialogHeader><DialogTitle>Resize Image</DialogTitle></DialogHeader>
         <div className="space-y-3 py-2">
           <div className="flex items-center gap-3">
-            <label className="text-sm w-16">Width (px):</label>
-            <Input type="number" min={10} value={width} onChange={e => {
-              const w = Number(e.target.value);
-              setWidth(w);
-              if (locked) setHeight(Math.round(w / origRatio));
-            }} className="w-24" />
+            <label className="text-sm w-20">Rows:</label>
+            <Input type="number" min={1} max={30} value={rows} onChange={e=>setRows(Number(e.target.value))} className="w-24"/>
           </div>
           <div className="flex items-center gap-3">
-            <label className="text-sm w-16">Height (px):</label>
-            <Input type="number" min={10} value={height} onChange={e => {
-              const h = Number(e.target.value);
-              setHeight(h);
-              if (locked) setWidth(Math.round(h * origRatio));
-            }} className="w-24" />
+            <label className="text-sm w-20">Columns:</label>
+            <Input type="number" min={1} max={10} value={cols} onChange={e=>setCols(Number(e.target.value))} className="w-24"/>
           </div>
-          <label className="flex items-center gap-2 text-sm cursor-pointer">
-            <input type="checkbox" checked={locked} onChange={e => setLocked(e.target.checked)} />
-            Lock aspect ratio
-          </label>
+          <div className="border rounded p-2 overflow-auto bg-muted/30">
+            <table style={{borderCollapse:"collapse",width:"100%"}}>
+              <tbody>{Array.from({length:Math.min(rows,5)}).map((_,r)=>(
+                <tr key={r}>{Array.from({length:Math.min(cols,6)}).map((_,c)=>(
+                  <td key={c} style={{border:"1px solid #ccc",padding:"3px 8px",
+                    background:r===0?"#e5e7eb":"white",fontSize:11,textAlign:"center"}}>
+                    {r===0?`H${c+1}`:"·"}
+                  </td>
+                ))}</tr>
+              ))}</tbody>
+            </table>
+            {rows>5&&<p className="text-xs text-muted-foreground mt-1">+{rows-5} more rows…</p>}
+          </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={applyResize}>Apply</Button>
+          <Button onClick={()=>onInsert(rows,cols)}>Insert Table</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -310,87 +194,81 @@ function ImageResizeModal({
 }
 
 /* ════════════════════════════════════════════
-   MAIN COMPONENT
+   MAIN EDITOR
 ═══════════════════════════════════════════ */
 export default function DocumentEditorPage() {
   const { profile } = useAuth();
-  const editorRef = useRef<HTMLDivElement>(null);
+  const editorRef  = useRef<HTMLDivElement>(null);
+  const wordRef    = useRef<HTMLInputElement>(null);
+  const imgRef     = useRef<HTMLInputElement>(null);
+  const saveTimer  = useRef<NodeJS.Timeout|null>(null);
 
-  const [docs, setDocs] = useState<Doc[]>([]);
-  const [selectedDoc, setSelectedDoc] = useState<Doc | null>(null);
-  const [title, setTitle] = useState("Untitled Document");
-  const [saving, setSaving] = useState(false);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<Doc | null>(null);
+  const [docs, setDocs]               = useState<Doc[]>([]);
+  const [selectedDoc, setSelectedDoc] = useState<Doc|null>(null);
+  const [title, setTitle]             = useState("Untitled Document");
+  const [saving, setSaving]           = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [importing, setImporting]     = useState(false);
+
+  const [deleteOpen, setDeleteOpen]     = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Doc|null>(null);
 
   const [showColorPicker, setShowColorPicker] = useState(false);
-  const [showBgColorPicker, setShowBgColorPicker] = useState(false);
-  const [activeFormats, setActiveFormats] = useState<Record<string, boolean>>({});
-  const [fontSize, setFontSize] = useState("14");
+  const [showBgPicker, setShowBgPicker]       = useState(false);
+  const [activeFormats, setActiveFormats]     = useState<Record<string,boolean>>({});
+  const [fontSize, setFontSize]     = useState("14");
   const [fontFamily, setFontFamily] = useState("Arial");
 
   const [showTableModal, setShowTableModal] = useState(false);
-  const [annotateImg, setAnnotateImg] = useState<string | null>(null);
-  const [annotateImgEl, setAnnotateImgEl] = useState<HTMLImageElement | null>(null);
-  const [resizeImgEl, setResizeImgEl] = useState<HTMLImageElement | null>(null);
-
-  const saveTimeout = useRef<NodeJS.Timeout | null>(null);
-  const wordUploadRef = useRef<HTMLInputElement>(null);
-  const imgUploadRef = useRef<HTMLInputElement>(null);
+  const [annotateImg, setAnnotateImg]       = useState<string|null>(null);
+  const [annotateImgEl, setAnnotateImgEl]   = useState<HTMLImageElement|null>(null);
 
   /* ── Load docs ── */
-  const loadDocs = async () => {
+  const loadDocs = useCallback(async () => {
     if (!profile) return;
-    const { data } = await supabase
-      .from("user_documents").select("*")
-      .eq("user_id", profile.id).order("updated_at", { ascending: false });
+    const {data} = await supabase.from("user_documents").select("*")
+      .eq("user_id", profile.id).order("updated_at", {ascending:false});
     setDocs((data ?? []) as Doc[]);
-  };
+  }, [profile]);
 
-  useEffect(() => { loadDocs(); }, [profile]);
+  useEffect(() => { loadDocs(); }, [loadDocs]);
 
-  /* ── Make images in editor clickable for context menu ── */
+  /* ── Image click → context menu ── */
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
-    const handleClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.tagName === "IMG") {
-        e.preventDefault();
-        showImageMenu(target as HTMLImageElement, e.clientX, e.clientY);
-      }
+    const onClick = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.tagName === "IMG") showImgMenu(t as HTMLImageElement, e.clientX, e.clientY);
     };
-    editor.addEventListener("click", handleClick);
-    return () => editor.removeEventListener("click", handleClick);
+    editor.addEventListener("click", onClick);
+    return () => editor.removeEventListener("click", onClick);
   }, [selectedDoc]);
 
-  /* ── Image context menu ── */
-  const showImageMenu = (img: HTMLImageElement, x: number, y: number) => {
-    // Remove existing menu
-    document.getElementById("img-ctx-menu")?.remove();
+  const showImgMenu = (img: HTMLImageElement, x: number, y: number) => {
+    document.getElementById("_img_ctx")?.remove();
     const menu = document.createElement("div");
-    menu.id = "img-ctx-menu";
-    menu.style.cssText = `position:fixed;top:${y}px;left:${x}px;z-index:9999;
-      background:white;border:1px solid #ddd;border-radius:8px;
-      box-shadow:0 4px 16px rgba(0,0,0,0.15);padding:4px;min-width:160px;`;
-
-    const items = [
-      { label: "✏️ Annotate / Draw", action: () => { setAnnotateImgEl(img); setAnnotateImg(img.src); } },
-      { label: "↔️ Resize Image", action: () => setResizeImgEl(img) },
-      { label: "🗑️ Delete Image", action: () => img.remove() },
-    ];
-
-    items.forEach(({ label, action }) => {
-      const btn = document.createElement("button");
-      btn.textContent = label;
-      btn.style.cssText = `display:block;width:100%;text-align:left;padding:8px 12px;
-        font-size:13px;border:none;background:none;cursor:pointer;border-radius:6px;`;
-      btn.onmouseenter = () => btn.style.background = "#f0f0f0";
-      btn.onmouseleave = () => btn.style.background = "none";
-      btn.onclick = () => { action(); menu.remove(); };
-      menu.appendChild(btn);
+    menu.id = "_img_ctx";
+    Object.assign(menu.style, {
+      position:"fixed", top:`${y}px`, left:`${x}px`, zIndex:"9999",
+      background:"white", border:"1px solid #e5e7eb", borderRadius:"10px",
+      boxShadow:"0 8px 24px rgba(0,0,0,0.15)", padding:"4px", minWidth:"170px",
     });
-
+    const items = [
+      { label:"✏️  Draw / Annotate", fn:() => { setAnnotateImgEl(img); setAnnotateImg(img.src); } },
+      { label:"↔️  Resize Image",    fn:() => resizeImg(img) },
+      { label:"🗑️  Delete Image",    fn:() => { img.remove(); triggerSave(); } },
+    ];
+    items.forEach(({label,fn}) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      Object.assign(b.style, {display:"block",width:"100%",textAlign:"left",
+        padding:"8px 14px",fontSize:"13px",border:"none",background:"none",cursor:"pointer",borderRadius:"7px"});
+      b.onmouseenter = () => { b.style.background="#f3f4f6"; };
+      b.onmouseleave = () => { b.style.background="none"; };
+      b.onclick = () => { fn(); menu.remove(); };
+      menu.appendChild(b);
+    });
     document.body.appendChild(menu);
     const close = (e: MouseEvent) => {
       if (!menu.contains(e.target as Node)) { menu.remove(); document.removeEventListener("mousedown", close); }
@@ -398,18 +276,31 @@ export default function DocumentEditorPage() {
     setTimeout(() => document.addEventListener("mousedown", close), 100);
   };
 
+  const resizeImg = (img: HTMLImageElement) => {
+    const w = prompt("Enter width in px:", String(img.width || img.naturalWidth || 300));
+    if (!w) return;
+    const ratio = (img.naturalHeight || img.height) / (img.naturalWidth || img.width || 300);
+    img.style.width  = w + "px";
+    img.style.height = Math.round(Number(w) * ratio) + "px";
+    triggerSave();
+  };
+
   /* ── Select doc ── */
   const selectDoc = (doc: Doc) => {
-    setSelectedDoc(doc);
-    setTitle(doc.title);
-    if (editorRef.current) editorRef.current.innerHTML = doc.content || "";
+    setSelectedDoc(doc); setTitle(doc.title);
+    requestAnimationFrame(() => {
+      if (editorRef.current) {
+        editorRef.current.innerHTML = doc.content || "";
+        editorRef.current.focus();
+      }
+    });
   };
 
   /* ── New doc ── */
   const createNewDoc = async () => {
     if (!profile) return;
-    const { data, error } = await supabase.from("user_documents")
-      .insert({ user_id: profile.id, title: "Untitled Document", content: "" })
+    const {data, error} = await supabase.from("user_documents")
+      .insert({user_id:profile.id, title:"Untitled Document", content:""})
       .select("*").single();
     if (error) return toast.error(error.message);
     toast.success("New document created!");
@@ -421,34 +312,26 @@ export default function DocumentEditorPage() {
   const autoSave = useCallback(async () => {
     if (!selectedDoc || !profile) return;
     const content = editorRef.current?.innerHTML || "";
-    const { error } = await supabase.from("user_documents")
-      .update({ title, content, updated_at: new Date().toISOString() })
+    const {error} = await supabase.from("user_documents")
+      .update({title, content, updated_at:new Date().toISOString()})
       .eq("id", selectedDoc.id);
-    if (!error) setDocs(prev => prev.map(d => d.id === selectedDoc.id ? { ...d, title, content } : d));
+    if (!error) setDocs(prev => prev.map(d => d.id===selectedDoc.id ? {...d,title,content} : d));
   }, [selectedDoc, title, profile]);
 
-  const handleSave = async () => {
-    if (!selectedDoc) return;
-    setSaving(true);
-    await autoSave();
-    setSaving(false);
-    toast.success("Document saved!");
-  };
+  const handleSave = async () => { setSaving(true); await autoSave(); setSaving(false); toast.success("Saved!"); };
 
-  const handleContentChange = () => {
-    if (saveTimeout.current) clearTimeout(saveTimeout.current);
-    saveTimeout.current = setTimeout(autoSave, 2000);
-    updateActiveFormats();
+  const triggerSave = () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(autoSave, 1500);
+    updateFormats();
   };
 
   /* ── Delete ── */
   const handleDelete = async () => {
     if (!deleteTarget) return;
-    const { error } = await supabase.from("user_documents").delete().eq("id", deleteTarget.id);
-    if (error) return toast.error(error.message);
-    toast.success("Document deleted!");
-    setDeleteDialogOpen(false);
-    setDeleteTarget(null);
+    await supabase.from("user_documents").delete().eq("id", deleteTarget.id);
+    toast.success("Deleted!");
+    setDeleteOpen(false); setDeleteTarget(null);
     if (selectedDoc?.id === deleteTarget.id) {
       setSelectedDoc(null);
       if (editorRef.current) editorRef.current.innerHTML = "";
@@ -457,194 +340,213 @@ export default function DocumentEditorPage() {
   };
 
   /* ── Format commands ── */
-  const exec = (command: string, value?: string) => {
+  const exec = (cmd: string, val?: string) => {
     editorRef.current?.focus();
-    document.execCommand(command, false, value);
-    updateActiveFormats();
+    document.execCommand(cmd, false, val);
+    updateFormats();
   };
 
-  const updateActiveFormats = () => {
-    setActiveFormats({
-      bold: document.queryCommandState("bold"),
-      italic: document.queryCommandState("italic"),
-      underline: document.queryCommandState("underline"),
-      strikeThrough: document.queryCommandState("strikeThrough"),
-      justifyLeft: document.queryCommandState("justifyLeft"),
-      justifyCenter: document.queryCommandState("justifyCenter"),
-      justifyRight: document.queryCommandState("justifyRight"),
-      justifyFull: document.queryCommandState("justifyFull"),
-      insertUnorderedList: document.queryCommandState("insertUnorderedList"),
-      insertOrderedList: document.queryCommandState("insertOrderedList"),
-    });
+  const updateFormats = () => {
+    try {
+      setActiveFormats({
+        bold:                document.queryCommandState("bold"),
+        italic:              document.queryCommandState("italic"),
+        underline:           document.queryCommandState("underline"),
+        strikeThrough:       document.queryCommandState("strikeThrough"),
+        justifyLeft:         document.queryCommandState("justifyLeft"),
+        justifyCenter:       document.queryCommandState("justifyCenter"),
+        justifyRight:        document.queryCommandState("justifyRight"),
+        justifyFull:         document.queryCommandState("justifyFull"),
+        insertUnorderedList: document.queryCommandState("insertUnorderedList"),
+        insertOrderedList:   document.queryCommandState("insertOrderedList"),
+      });
+    } catch {}
   };
 
-  /* ── Apply heading / paragraph format ── */
-  const applyBlockFormat = (tag: string) => {
+  const applyBlock = (tag: string) => {
     editorRef.current?.focus();
-    document.execCommand("formatBlock", false, tag);
-    updateActiveFormats();
+    document.execCommand("formatBlock", false, `<${tag}>`);
+    updateFormats(); triggerSave();
   };
 
   /* ── Insert Table ── */
   const insertTable = (rows: number, cols: number) => {
-    editorRef.current?.focus();
-    let html = `<table style="border-collapse:collapse;width:100%;margin:8px 0;">`;
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.focus();
+
+    let html = `<br><table style="border-collapse:collapse;width:100%;margin:8px 0;table-layout:fixed;">`;
     for (let r = 0; r < rows; r++) {
       html += "<tr>";
       for (let c = 0; c < cols; c++) {
-        const cellStyle = `border:1px solid #ccc;padding:6px 10px;min-width:60px;
-          ${r === 0 ? "background:#f3f4f6;font-weight:600;" : ""}`;
-        html += r === 0
-          ? `<th style="${cellStyle}" contenteditable="true">Header ${c + 1}</th>`
-          : `<td style="${cellStyle}" contenteditable="true">&nbsp;</td>`;
+        const isHead = r === 0;
+        const style = `border:1.5px solid #9ca3af;padding:6px 10px;min-width:40px;word-break:break-word;vertical-align:top;${isHead?"background:#f3f4f6;font-weight:600;":"background:#ffffff;"}`;
+        html += isHead
+          ? `<th style="${style}">Header ${c+1}</th>`
+          : `<td style="${style}">&nbsp;</td>`;
       }
       html += "</tr>";
     }
-    html += "</table><p><br></p>";
-    document.execCommand("insertHTML", false, html);
+    html += "</table><br>";
+
+    // insert at cursor
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      const frag = range.createContextualFragment(html);
+      range.insertNode(frag);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } else {
+      editor.innerHTML += html;
+    }
+
     setShowTableModal(false);
-    handleContentChange();
+    triggerSave();
+    toast.success("Table inserted!");
   };
 
   /* ── Insert link ── */
-  const insertLink = () => {
-    const url = prompt("Enter URL:");
-    if (url) exec("createLink", url);
-  };
+  const insertLink = () => { const u = prompt("Enter URL:"); if (u) exec("createLink", u); };
 
-  /* ── Insert image from file ── */
-  const insertImage = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const src = ev.target?.result as string;
-      const imgHtml = `<img src="${src}" style="max-width:100%;cursor:pointer;" />`;
-      editorRef.current?.focus();
-      document.execCommand("insertHTML", false, imgHtml);
-      handleContentChange();
-    };
-    reader.readAsDataURL(file);
+  /* ── Insert image(s) ── */
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    files.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const src = ev.target?.result as string;
+        const editor = editorRef.current;
+        if (!editor) return;
+        editor.focus();
+        const html = `<img src="${src}" style="max-width:100%;height:auto;display:block;margin:8px 0;cursor:pointer;" />`;
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          const range = sel.getRangeAt(0);
+          const frag = range.createContextualFragment(html);
+          range.insertNode(frag);
+          range.collapse(false);
+        } else {
+          editor.innerHTML += html;
+        }
+        triggerSave();
+      };
+      reader.readAsDataURL(file);
+    });
     e.target.value = "";
   };
 
-  /* ── Word (.docx) upload ── */
+  /* ── Word import (multi-file, fast) ── */
   const handleWordUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
     e.target.value = "";
 
     if (typeof mammoth === "undefined") {
-      toast.error("Word converter not loaded. Please refresh the page.");
+      toast.error("Word converter not loaded — please refresh the page.");
       return;
     }
 
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const result = await mammoth.convertToHtml({ arrayBuffer });
-      if (!editorRef.current) return;
+    setImporting(true);
+    for (const file of files) {
+      try {
+        const buf = await file.arrayBuffer();
+        const result = await mammoth.convertToHtml(
+          { arrayBuffer: buf },
+          { styleMap: [
+            "p[style-name='Heading 1'] => h1:fresh",
+            "p[style-name='Heading 2'] => h2:fresh",
+            "p[style-name='Heading 3'] => h3:fresh",
+          ]}
+        );
 
-      // Style the converted HTML tables
-      const styled = result.value
-        .replace(/<table/g, '<table style="border-collapse:collapse;width:100%;margin:8px 0;"')
-        .replace(/<td/g, '<td style="border:1px solid #ccc;padding:6px 10px;"')
-        .replace(/<th/g, '<th style="border:1px solid #ccc;padding:6px 10px;background:#f3f4f6;font-weight:600;"');
+        // Fix tables + images in imported HTML
+        const parser = new DOMParser();
+        const dom = parser.parseFromString(result.value, "text/html");
+        dom.querySelectorAll("table").forEach(t => {
+          t.style.cssText = "border-collapse:collapse;width:100%;margin:8px 0;";
+        });
+        dom.querySelectorAll("td,th").forEach(c => {
+          (c as HTMLElement).style.cssText += ";border:1.5px solid #9ca3af;padding:6px 10px;vertical-align:top;word-break:break-word;";
+        });
+        dom.querySelectorAll("th").forEach(c => {
+          (c as HTMLElement).style.background = "#f3f4f6";
+          (c as HTMLElement).style.fontWeight  = "600";
+        });
+        dom.querySelectorAll("img").forEach(img => {
+          (img as HTMLElement).style.cssText = "max-width:100%;height:auto;display:block;margin:8px 0;cursor:pointer;";
+        });
 
-      editorRef.current.innerHTML = styled;
-      setTitle(file.name.replace(/\.docx?$/i, ""));
-      handleContentChange();
+        const styledHtml = dom.body.innerHTML;
+        const newTitle   = file.name.replace(/\.docx?$/i, "");
 
-      if (result.messages.length > 0) {
-        toast.info("Word file imported. Some complex formatting may have changed.");
-      } else {
-        toast.success("Word file imported successfully!");
+        const {data, error} = await supabase.from("user_documents")
+          .insert({user_id: profile?.id, title: newTitle, content: styledHtml})
+          .select("*").single();
+        if (error) throw error;
+
+        await loadDocs();
+        selectDoc(data as Doc);
+        toast.success(`"${newTitle}" imported!`);
+      } catch (err: any) {
+        toast.error(`Failed: "${file.name}" — ${err?.message || "Unknown error"}`);
       }
-    } catch {
-      toast.error("Could not read Word file. Make sure it is a valid .docx file.");
     }
+    setImporting(false);
   };
 
   /* ── Annotation save ── */
-  const handleAnnotationSave = (dataUrl: string) => {
-    if (!annotateImgEl) return;
-    annotateImgEl.src = dataUrl;
-    setAnnotateImg(null);
-    setAnnotateImgEl(null);
-    handleContentChange();
-    toast.success("Annotation saved!");
+  const saveAnnotation = (dataUrl: string) => {
+    if (annotateImgEl) { annotateImgEl.src = dataUrl; triggerSave(); toast.success("Annotation saved!"); }
+    setAnnotateImg(null); setAnnotateImgEl(null);
   };
 
-  /* ── Download helpers ── */
-  const downloadHTML = () => {
-    if (!editorRef.current) return;
-    const content = editorRef.current.innerHTML;
-    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title>
-      <style>body{font-family:Arial;max-width:800px;margin:40px auto;padding:0 20px;line-height:1.6}
-      table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px 10px}</style>
-      </head><body>${content}</body></html>`;
-    const a = Object.assign(document.createElement("a"), {
-      href: URL.createObjectURL(new Blob([html], { type: "text/html" })),
-      download: `${title}.html`,
-    });
-    a.click();
+  /* ── Export ── */
+  const exportCSS = `
+    body{font-family:Arial;width:210mm;margin:0 auto;padding:15mm 20mm;line-height:1.6;font-size:14px}
+    h1{font-size:2em;font-weight:700;margin:.4em 0}h2{font-size:1.5em;font-weight:700;margin:.4em 0}h3{font-size:1.2em;font-weight:600;margin:.4em 0}
+    table{border-collapse:collapse;width:100%;margin:8px 0}td,th{border:1.5px solid #9ca3af;padding:6px 10px;vertical-align:top}
+    th{background:#f3f4f6;font-weight:600}
+    ul{list-style:disc;padding-left:1.5em}ol{list-style:decimal;padding-left:1.5em}
+    img{max-width:100%;height:auto}@media print{body{padding:10mm}}
+  `;
+  const fullHtml = (body: string) =>
+    `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title><style>${exportCSS}</style></head><body>${body}</body></html>`;
+  const dl = (content: string, type: string, name: string) => {
+    Object.assign(document.createElement("a"), {
+      href: URL.createObjectURL(new Blob([content], {type})), download: name,
+    }).click();
   };
-
-  const downloadTXT = () => {
-    if (!editorRef.current) return;
-    const a = Object.assign(document.createElement("a"), {
-      href: URL.createObjectURL(new Blob([editorRef.current.innerText], { type: "text/plain" })),
-      download: `${title}.txt`,
-    });
-    a.click();
-  };
-
   const printDoc = () => {
-    if (!editorRef.current) return;
-    const win = window.open("", "_blank");
-    if (!win) return;
-    win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title>
-      <style>body{font-family:Arial;max-width:800px;margin:40px auto;padding:0 20px;line-height:1.6}
-      table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px 10px}
-      @media print{body{margin:0}}</style></head><body>${editorRef.current.innerHTML}</body></html>`);
-    win.document.close();
-    win.print();
+    const w = window.open("","_blank");
+    if (!w) return;
+    w.document.write(fullHtml(editorRef.current?.innerHTML || ""));
+    w.document.close(); w.print();
   };
 
-  const toolbarBtn = (active: boolean) =>
-    cn("h-8 w-8 p-0 rounded flex items-center justify-center transition-colors",
-      active ? "bg-primary text-primary-foreground" : "hover:bg-muted text-foreground");
+  /* ── Toolbar btn style ── */
+  const tb = (active: boolean) => cn(
+    "h-8 w-8 p-0 rounded flex items-center justify-center transition-colors shrink-0",
+    active ? "bg-primary text-primary-foreground" : "hover:bg-muted text-foreground"
+  );
 
-  /* ════════════════════ RENDER ════════════════════ */
+  /* ══════════════════════════ RENDER ══════════════════════════ */
   return (
     <>
-      {/* ── Modals ── */}
-      {showTableModal && (
-        <InsertTableModal
-          onInsert={insertTable}
-          onClose={() => setShowTableModal(false)}
-        />
-      )}
+      {showTableModal && <InsertTableModal onInsert={insertTable} onClose={() => setShowTableModal(false)}/>}
       {annotateImg && annotateImgEl && (
-        <ImageAnnotateModal
-          src={annotateImg}
-          onSave={handleAnnotationSave}
-          onClose={() => { setAnnotateImg(null); setAnnotateImgEl(null); }}
-        />
-      )}
-      {resizeImgEl && (
-        <ImageResizeModal
-          imgEl={resizeImgEl}
-          onClose={() => setResizeImgEl(null)}
-        />
+        <ImageAnnotateModal src={annotateImg} onSave={saveAnnotation}
+          onClose={() => { setAnnotateImg(null); setAnnotateImgEl(null); }}/>
       )}
 
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Document?</AlertDialogTitle>
-            <AlertDialogDescription>
-              "{deleteTarget?.title}" will be permanently deleted.
-            </AlertDialogDescription>
+            <AlertDialogDescription>"{deleteTarget?.title}" will be permanently deleted.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -653,254 +555,259 @@ export default function DocumentEditorPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Hidden file inputs */}
-      <input ref={wordUploadRef} type="file" accept=".doc,.docx" className="hidden" onChange={handleWordUpload} />
-      <input ref={imgUploadRef} type="file" accept="image/*" className="hidden" onChange={insertImage} />
+      <input ref={wordRef} type="file" accept=".doc,.docx" multiple className="hidden" onChange={handleWordUpload}/>
+      <input ref={imgRef}  type="file" accept="image/*"    multiple className="hidden" onChange={handleImageUpload}/>
 
-      <div className="flex h-[calc(100vh-56px)] overflow-hidden">
+      <div className="flex h-[calc(100vh-56px)] overflow-hidden bg-background">
+
         {/* ── Sidebar ── */}
-        <div className="w-64 border-r border-border bg-card flex flex-col shrink-0">
-          <div className="p-3 border-b border-border space-y-2">
-            <Button onClick={createNewDoc} className="w-full gap-2" size="sm">
-              <Plus className="h-4 w-4" /> New Document
-            </Button>
-            <Button
-              variant="outline" size="sm" className="w-full gap-2"
-              onClick={() => wordUploadRef.current?.click()}
-            >
-              <Upload className="h-4 w-4" /> Import Word File
-            </Button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+        <div className={cn("flex flex-col border-r border-border bg-card transition-all duration-200 shrink-0 overflow-hidden",
+          sidebarOpen ? "w-52" : "w-0")}>
+          <div className="flex-1 overflow-y-auto p-2 space-y-0.5 pt-2">
             {docs.length === 0 && (
-              <p className="text-xs text-muted-foreground text-center pt-4">No documents yet</p>
+              <p className="text-xs text-muted-foreground text-center py-6">No documents yet</p>
             )}
-            {docs.map((doc) => (
+            {docs.map(doc => (
               <div key={doc.id} onClick={() => selectDoc(doc)}
-                className={cn(
-                  "flex items-center justify-between rounded-lg px-3 py-2 cursor-pointer group transition-colors",
-                  selectedDoc?.id === doc.id ? "bg-primary/10 text-primary" : "hover:bg-muted"
-                )}>
-                <div className="flex items-center gap-2 min-w-0">
-                  <FileText className="h-4 w-4 shrink-0" />
-                  <span className="text-sm truncate">{doc.title}</span>
+                className={cn("flex items-center justify-between rounded-lg px-2 py-1.5 cursor-pointer group transition-colors",
+                  selectedDoc?.id === doc.id ? "bg-primary/10 text-primary" : "hover:bg-muted")}>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <FileText className="h-3.5 w-3.5 shrink-0"/>
+                  <span className="text-xs truncate">{doc.title}</span>
                 </div>
-                <button onClick={(e) => { e.stopPropagation(); setDeleteTarget(doc); setDeleteDialogOpen(true); }}
-                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-destructive/10">
-                  <Trash2 className="h-3 w-3 text-destructive" />
+                <button onClick={e => { e.stopPropagation(); setDeleteTarget(doc); setDeleteOpen(true); }}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-destructive/10">
+                  <Trash2 className="h-3 w-3 text-destructive"/>
                 </button>
               </div>
             ))}
           </div>
         </div>
 
-        {/* ── Editor Area ── */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        {/* ── Main editor column ── */}
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+
+          {/* ══ TOOLBAR ══ */}
+          <div className="flex items-center gap-1 flex-wrap px-2 py-1.5 border-b border-border bg-card select-none">
+
+            {/* Sidebar toggle */}
+            <button onClick={() => setSidebarOpen(o => !o)} className={tb(false)} title="Toggle sidebar">
+              {sidebarOpen ? <ChevronLeft className="h-4 w-4"/> : <ChevronRight className="h-4 w-4"/>}
+            </button>
+
+            {/* New doc */}
+            <button onClick={createNewDoc} className={tb(false)} title="New Document">
+              <FilePlus className="h-4 w-4"/>
+            </button>
+
+            {/* Import Word */}
+            <button onClick={() => wordRef.current?.click()} disabled={importing}
+              className={cn(tb(false), "w-auto px-2 gap-1 text-xs font-medium")} title="Import Word (.docx)">
+              <Upload className="h-3.5 w-3.5 shrink-0"/>
+              <span>{importing ? "Importing…" : "Import"}</span>
+            </button>
+
+            <div className="w-px h-5 bg-border mx-0.5"/>
+
+            {/* Save */}
+            <button onClick={handleSave} disabled={saving || !selectedDoc}
+              className={cn(tb(false), "w-auto px-2 gap-1 text-xs")}>
+              <Save className="h-3.5 w-3.5"/>
+              <span>{saving ? "…" : "Save"}</span>
+            </button>
+
+            {/* Export dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className={cn(tb(false), "w-auto px-2 gap-1 text-xs")} disabled={!selectedDoc}>
+                  <Download className="h-3.5 w-3.5"/>
+                  <span>Export</span>
+                  <ChevronDown className="h-3 w-3"/>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent>
+                <DropdownMenuItem onClick={printDoc}>Save as PDF (Print)</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => dl(fullHtml(editorRef.current?.innerHTML||""),"text/html",`${title}.html`)}>Download HTML</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => dl(editorRef.current?.innerText||"","text/plain",`${title}.txt`)}>Download TXT</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <div className="w-px h-5 bg-border mx-0.5"/>
+
+            {/* Undo / Redo */}
+            <button className={tb(false)} onClick={() => exec("undo")} title="Undo"><Undo className="h-4 w-4"/></button>
+            <button className={tb(false)} onClick={() => exec("redo")} title="Redo"><Redo className="h-4 w-4"/></button>
+
+            <div className="w-px h-5 bg-border mx-0.5"/>
+
+            {/* Block format */}
+            <Select defaultValue="p" onValueChange={applyBlock}>
+              <SelectTrigger className="h-7 w-28 text-xs"><SelectValue placeholder="Format"/></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="p">Paragraph</SelectItem>
+                <SelectItem value="h1"><span className="font-bold text-base">Heading 1</span></SelectItem>
+                <SelectItem value="h2"><span className="font-bold">Heading 2</span></SelectItem>
+                <SelectItem value="h3"><span className="font-semibold">Heading 3</span></SelectItem>
+                <SelectItem value="blockquote">Blockquote</SelectItem>
+                <SelectItem value="pre">Code</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* Font family */}
+            <Select value={fontFamily} onValueChange={v => { setFontFamily(v); exec("fontName", v); }}>
+              <SelectTrigger className="h-7 w-28 text-xs"><SelectValue/></SelectTrigger>
+              <SelectContent>
+                {FONT_FAMILIES.map(f => <SelectItem key={f} value={f} style={{fontFamily:f}}>{f}</SelectItem>)}
+              </SelectContent>
+            </Select>
+
+            {/* Font size */}
+            <Select value={fontSize} onValueChange={v => {
+              setFontSize(v);
+              editorRef.current?.focus();
+              const sel = window.getSelection();
+              if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+                const range = sel.getRangeAt(0);
+                const span  = document.createElement("span");
+                span.style.fontSize = v + "px";
+                try { range.surroundContents(span); } catch {}
+              }
+            }}>
+              <SelectTrigger className="h-7 w-14 text-xs"><SelectValue/></SelectTrigger>
+              <SelectContent>
+                {FONT_SIZES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+              </SelectContent>
+            </Select>
+
+            <div className="w-px h-5 bg-border mx-0.5"/>
+
+            {/* Bold / Italic / Underline / Strike */}
+            <button className={tb(activeFormats.bold)}        onClick={() => exec("bold")}         title="Bold"><Bold className="h-4 w-4"/></button>
+            <button className={tb(activeFormats.italic)}      onClick={() => exec("italic")}       title="Italic"><Italic className="h-4 w-4"/></button>
+            <button className={tb(activeFormats.underline)}   onClick={() => exec("underline")}    title="Underline"><Underline className="h-4 w-4"/></button>
+            <button className={tb(activeFormats.strikeThrough)} onClick={() => exec("strikeThrough")} title="Strikethrough"><Strikethrough className="h-4 w-4"/></button>
+
+            <div className="w-px h-5 bg-border mx-0.5"/>
+
+            {/* Text color */}
+            <div className="relative">
+              <button className={tb(false)} title="Text Color"
+                onClick={() => { setShowColorPicker(p => !p); setShowBgPicker(false); }}>
+                <Type className="h-4 w-4"/>
+              </button>
+              {showColorPicker && (
+                <div className="absolute top-9 left-0 z-50 bg-card border border-border rounded-xl shadow-xl p-2 grid grid-cols-8 gap-1 w-44">
+                  {COLORS.map(c => (
+                    <button key={c} style={{backgroundColor:c}}
+                      className="w-4 h-4 rounded border border-border/50 hover:scale-125 transition-transform"
+                      onClick={() => { exec("foreColor", c); setShowColorPicker(false); }}/>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Highlight color */}
+            <div className="relative">
+              <button className={tb(false)} title="Highlight Color"
+                onClick={() => { setShowBgPicker(p => !p); setShowColorPicker(false); }}>
+                <Palette className="h-4 w-4"/>
+              </button>
+              {showBgPicker && (
+                <div className="absolute top-9 left-0 z-50 bg-card border border-border rounded-xl shadow-xl p-2 grid grid-cols-8 gap-1 w-44">
+                  {COLORS.map(c => (
+                    <button key={c} style={{backgroundColor:c}}
+                      className="w-4 h-4 rounded border border-border/50 hover:scale-125 transition-transform"
+                      onClick={() => { exec("hiliteColor", c); setShowBgPicker(false); }}/>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="w-px h-5 bg-border mx-0.5"/>
+
+            {/* Alignment */}
+            <button className={tb(activeFormats.justifyLeft)}   onClick={() => exec("justifyLeft")}   title="Align Left"><AlignLeft className="h-4 w-4"/></button>
+            <button className={tb(activeFormats.justifyCenter)} onClick={() => exec("justifyCenter")} title="Center"><AlignCenter className="h-4 w-4"/></button>
+            <button className={tb(activeFormats.justifyRight)}  onClick={() => exec("justifyRight")}  title="Right"><AlignRight className="h-4 w-4"/></button>
+            <button className={tb(activeFormats.justifyFull)}   onClick={() => exec("justifyFull")}   title="Justify"><AlignJustify className="h-4 w-4"/></button>
+
+            <div className="w-px h-5 bg-border mx-0.5"/>
+
+            {/* Lists */}
+            <button className={tb(activeFormats.insertUnorderedList)} onClick={() => exec("insertUnorderedList")} title="Bullet List"><List className="h-4 w-4"/></button>
+            <button className={tb(activeFormats.insertOrderedList)}   onClick={() => exec("insertOrderedList")}   title="Numbered List"><ListOrdered className="h-4 w-4"/></button>
+
+            <div className="w-px h-5 bg-border mx-0.5"/>
+
+            {/* Table */}
+            <button className={tb(false)} onClick={() => setShowTableModal(true)} title="Insert Table"><Table className="h-4 w-4"/></button>
+
+            {/* Image */}
+            <button className={tb(false)} onClick={() => imgRef.current?.click()} title="Insert Image(s)"><ImageIcon className="h-4 w-4"/></button>
+
+            {/* Link */}
+            <button className={tb(false)} onClick={insertLink} title="Insert Link"><Link className="h-4 w-4"/></button>
+          </div>
+
+          {/* Title bar */}
+          {selectedDoc && (
+            <div className="flex items-center gap-2 px-4 py-1 border-b border-border bg-card/50">
+              <Input value={title} onChange={e => setTitle(e.target.value)} onBlur={handleSave}
+                className="text-sm font-medium border-none shadow-none focus-visible:ring-0 px-0 h-7 bg-transparent"
+                placeholder="Document title…"/>
+            </div>
+          )}
+
+          {/* ── Canvas area ── */}
           {selectedDoc ? (
-            <>
-              {/* Title Bar */}
-              <div className="flex items-center gap-3 px-4 py-2 border-b border-border bg-card">
-                <Input value={title} onChange={(e) => setTitle(e.target.value)}
-                  onBlur={handleSave}
-                  className="text-base font-medium border-none shadow-none focus-visible:ring-0 px-0 h-8"
-                  placeholder="Document title..." />
-                <div className="flex items-center gap-2 shrink-0">
-                  <Button size="sm" variant="outline" onClick={handleSave} disabled={saving} className="gap-2">
-                    <Save className="h-4 w-4" />
-                    {saving ? "Saving..." : "Save"}
-                  </Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button size="sm" variant="outline" className="gap-2">
-                        <Download className="h-4 w-4" /> Export <ChevronDown className="h-3 w-3" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent>
-                      <DropdownMenuItem onClick={printDoc}>Save as PDF (Print)</DropdownMenuItem>
-                      <DropdownMenuItem onClick={downloadHTML}>Download as HTML</DropdownMenuItem>
-                      <DropdownMenuItem onClick={downloadTXT}>Download as TXT</DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
+            <div className="flex-1 overflow-y-auto" style={{background:"#e8eaed"}}>
+              <style>{`
+                #ld-editor{outline:none;min-height:100%;}
+                #ld-editor:empty:before{content:"Start typing here…";color:#9ca3af;pointer-events:none;}
+                #ld-editor h1{font-size:2em;font-weight:700;margin:.4em 0;}
+                #ld-editor h2{font-size:1.5em;font-weight:700;margin:.4em 0;}
+                #ld-editor h3{font-size:1.2em;font-weight:600;margin:.4em 0;}
+                #ld-editor blockquote{border-left:4px solid #d1d5db;padding:4px 14px;color:#6b7280;margin:6px 0;}
+                #ld-editor pre{background:#f3f4f6;padding:12px;border-radius:6px;font-family:monospace;font-size:.9em;overflow-x:auto;}
+                #ld-editor ul{list-style:disc !important;padding-left:1.6em !important;margin:4px 0;}
+                #ld-editor ol{list-style:decimal !important;padding-left:1.6em !important;margin:4px 0;}
+                #ld-editor li{display:list-item !important;margin:2px 0;}
+                #ld-editor table{border-collapse:collapse;width:100%;margin:8px 0;}
+                #ld-editor td,#ld-editor th{border:1.5px solid #9ca3af;padding:6px 10px;vertical-align:top;min-width:40px;word-break:break-word;}
+                #ld-editor th{background:#f3f4f6;font-weight:600;}
+                #ld-editor img{max-width:100%;height:auto;cursor:pointer;display:block;margin:8px 0;}
+                #ld-editor img:hover{outline:2px solid #6366f1;outline-offset:2px;}
+                #ld-editor a{color:#2563eb;text-decoration:underline;}
+                #ld-editor p{margin:2px 0;min-height:1.4em;}
+              `}</style>
+
+              {/* Full-width white page — no narrow A4 box */}
+              <div style={{
+                background:"#ffffff",
+                minHeight:"100%",
+                padding:"24px 48px",
+                fontFamily: fontFamily,
+                fontSize: fontSize + "px",
+                lineHeight:"1.6",
+                wordBreak:"break-word",
+                boxSizing:"border-box",
+              }}>
+                <div id="ld-editor" ref={editorRef}
+                  contentEditable suppressContentEditableWarning
+                  onInput={triggerSave} onKeyUp={updateFormats} onMouseUp={updateFormats}
+                  style={{minHeight:"80vh"}}
+                />
               </div>
-
-              {/* ── Toolbar ── */}
-              <div className="flex items-center gap-1 flex-wrap px-3 py-2 border-b border-border bg-card">
-
-                {/* Undo / Redo */}
-                <button className={toolbarBtn(false)} onClick={() => exec("undo")} title="Undo"><Undo className="h-4 w-4" /></button>
-                <button className={toolbarBtn(false)} onClick={() => exec("redo")} title="Redo"><Redo className="h-4 w-4" /></button>
-                <div className="w-px h-6 bg-border mx-1" />
-
-                {/* Block format (Headings + Paragraph) */}
-                <Select defaultValue="p" onValueChange={applyBlockFormat}>
-                  <SelectTrigger className="h-8 w-32 text-xs">
-                    <SelectValue placeholder="Format" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="p">Paragraph</SelectItem>
-                    <SelectItem value="h1"><span className="font-bold text-base">Heading 1</span></SelectItem>
-                    <SelectItem value="h2"><span className="font-bold">Heading 2</span></SelectItem>
-                    <SelectItem value="h3"><span className="font-semibold">Heading 3</span></SelectItem>
-                    <SelectItem value="blockquote">Blockquote</SelectItem>
-                    <SelectItem value="pre">Code Block</SelectItem>
-                  </SelectContent>
-                </Select>
-
-                {/* Font Family */}
-                <Select value={fontFamily} onValueChange={(v) => { setFontFamily(v); exec("fontName", v); }}>
-                  <SelectTrigger className="h-8 w-32 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {FONT_FAMILIES.map(f => (
-                      <SelectItem key={f} value={f} style={{ fontFamily: f }}>{f}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                {/* Font Size */}
-                <Select value={fontSize} onValueChange={(v) => {
-                  setFontSize(v);
-                  const sel = window.getSelection();
-                  if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
-                    const range = sel.getRangeAt(0);
-                    const span = document.createElement("span");
-                    span.style.fontSize = v + "px";
-                    try { range.surroundContents(span); } catch {}
-                  }
-                }}>
-                  <SelectTrigger className="h-8 w-16 text-xs"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {FONT_SIZES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-
-                <div className="w-px h-6 bg-border mx-1" />
-
-                {/* Bold / Italic / Underline / Strike */}
-                <button className={toolbarBtn(activeFormats.bold)} onClick={() => exec("bold")} title="Bold"><Bold className="h-4 w-4" /></button>
-                <button className={toolbarBtn(activeFormats.italic)} onClick={() => exec("italic")} title="Italic"><Italic className="h-4 w-4" /></button>
-                <button className={toolbarBtn(activeFormats.underline)} onClick={() => exec("underline")} title="Underline"><Underline className="h-4 w-4" /></button>
-                <button className={toolbarBtn(activeFormats.strikeThrough)} onClick={() => exec("strikeThrough")} title="Strikethrough"><Strikethrough className="h-4 w-4" /></button>
-
-                <div className="w-px h-6 bg-border mx-1" />
-
-                {/* Text Color */}
-                <div className="relative">
-                  <button className={toolbarBtn(false)}
-                    onClick={() => { setShowColorPicker(!showColorPicker); setShowBgColorPicker(false); }}
-                    title="Text Color">
-                    <Type className="h-4 w-4" />
-                  </button>
-                  {showColorPicker && (
-                    <div className="absolute top-9 left-0 z-50 bg-card border border-border rounded-lg shadow-lg p-2 grid grid-cols-8 gap-1 w-48">
-                      {COLORS.map(c => (
-                        <button key={c} style={{ backgroundColor: c }}
-                          className="w-5 h-5 rounded border border-border hover:scale-110 transition-transform"
-                          onClick={() => { exec("foreColor", c); setShowColorPicker(false); }} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Highlight Color */}
-                <div className="relative">
-                  <button className={toolbarBtn(false)}
-                    onClick={() => { setShowBgColorPicker(!showBgColorPicker); setShowColorPicker(false); }}
-                    title="Highlight Color">
-                    <Palette className="h-4 w-4" />
-                  </button>
-                  {showBgColorPicker && (
-                    <div className="absolute top-9 left-0 z-50 bg-card border border-border rounded-lg shadow-lg p-2 grid grid-cols-8 gap-1 w-48">
-                      {COLORS.map(c => (
-                        <button key={c} style={{ backgroundColor: c }}
-                          className="w-5 h-5 rounded border border-border hover:scale-110 transition-transform"
-                          onClick={() => { exec("hiliteColor", c); setShowBgColorPicker(false); }} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="w-px h-6 bg-border mx-1" />
-
-                {/* Alignment */}
-                <button className={toolbarBtn(activeFormats.justifyLeft)} onClick={() => exec("justifyLeft")} title="Align Left"><AlignLeft className="h-4 w-4" /></button>
-                <button className={toolbarBtn(activeFormats.justifyCenter)} onClick={() => exec("justifyCenter")} title="Center"><AlignCenter className="h-4 w-4" /></button>
-                <button className={toolbarBtn(activeFormats.justifyRight)} onClick={() => exec("justifyRight")} title="Align Right"><AlignRight className="h-4 w-4" /></button>
-                <button className={toolbarBtn(activeFormats.justifyFull)} onClick={() => exec("justifyFull")} title="Justify"><AlignJustify className="h-4 w-4" /></button>
-
-                <div className="w-px h-6 bg-border mx-1" />
-
-                {/* Lists */}
-                <button className={toolbarBtn(activeFormats.insertUnorderedList)} onClick={() => exec("insertUnorderedList")} title="Bullet List"><List className="h-4 w-4" /></button>
-                <button className={toolbarBtn(activeFormats.insertOrderedList)} onClick={() => exec("insertOrderedList")} title="Numbered List"><ListOrdered className="h-4 w-4" /></button>
-
-                <div className="w-px h-6 bg-border mx-1" />
-
-                {/* Insert Table */}
-                <button className={toolbarBtn(false)} onClick={() => setShowTableModal(true)} title="Insert Table">
-                  <Table className="h-4 w-4" />
-                </button>
-
-                {/* Insert Image */}
-                <button className={toolbarBtn(false)} onClick={() => imgUploadRef.current?.click()} title="Insert Image">
-                  <ImageIcon className="h-4 w-4" />
-                </button>
-
-                {/* Insert Link */}
-                <button className={toolbarBtn(false)} onClick={insertLink} title="Insert Link">
-                  <Link className="h-4 w-4" />
-                </button>
-              </div>
-
-              {/* ── Editor Canvas ── */}
-              <div className="flex-1 overflow-y-auto bg-gray-100 dark:bg-gray-900 p-6">
-                <style>{`
-                  #doc-editor h1 { font-size: 2em; font-weight: 700; margin: 0.5em 0; }
-                  #doc-editor h2 { font-size: 1.5em; font-weight: 700; margin: 0.5em 0; }
-                  #doc-editor h3 { font-size: 1.2em; font-weight: 600; margin: 0.5em 0; }
-                  #doc-editor blockquote { border-left: 4px solid #ccc; margin: 8px 0; padding: 4px 12px; color: #555; }
-                  #doc-editor pre { background: #f3f4f6; padding: 12px; border-radius: 6px; font-family: monospace; }
-                  #doc-editor ul { list-style: disc; padding-left: 24px; margin: 4px 0; }
-                  #doc-editor ol { list-style: decimal; padding-left: 24px; margin: 4px 0; }
-                  #doc-editor li { margin: 2px 0; }
-                  #doc-editor table { border-collapse: collapse; width: 100%; margin: 8px 0; }
-                  #doc-editor td, #doc-editor th { border: 1px solid #ccc; padding: 6px 10px; min-width: 60px; }
-                  #doc-editor th { background: #f3f4f6; font-weight: 600; }
-                  #doc-editor img { cursor: pointer; }
-                  #doc-editor img:hover { outline: 2px solid #6366f1; }
-                  #doc-editor a { color: #2563eb; text-decoration: underline; }
-                  #doc-editor [data-placeholder]:empty:before {
-                    content: attr(data-placeholder);
-                    color: #aaa; pointer-events: none;
-                  }
-                `}</style>
-                <div className="mx-auto bg-white dark:bg-gray-800 shadow-md"
-                  style={{ width: "210mm", minHeight: "297mm", padding: "20mm",
-                    fontFamily, fontSize: fontSize + "px" }}>
-                  <div id="doc-editor" ref={editorRef}
-                    contentEditable suppressContentEditableWarning
-                    onInput={handleContentChange}
-                    onKeyUp={updateActiveFormats}
-                    onMouseUp={updateActiveFormats}
-                    className="outline-none min-h-full"
-                    style={{ lineHeight: "1.6", wordBreak: "break-word" }}
-                    data-placeholder="Start typing here..." />
-                </div>
-              </div>
-            </>
+            </div>
           ) : (
-            <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
-              <FileText className="h-16 w-16 text-muted-foreground mb-4" />
+            <div className="flex-1 flex flex-col items-center justify-center text-center p-8" style={{background:"#e8eaed"}}>
+              <FileText className="h-16 w-16 text-muted-foreground mb-4 opacity-40"/>
               <h2 className="text-xl font-semibold mb-2">No document selected</h2>
-              <p className="text-muted-foreground mb-6">Select a document from the sidebar or create a new one</p>
-              <div className="flex gap-3">
-                <Button onClick={createNewDoc} className="gap-2">
-                  <Plus className="h-4 w-4" /> New Document
-                </Button>
-                <Button variant="outline" className="gap-2" onClick={() => wordUploadRef.current?.click()}>
-                  <Upload className="h-4 w-4" /> Import Word File
+              <p className="text-muted-foreground mb-6 text-sm">Select a document from the sidebar or create a new one</p>
+              <div className="flex gap-3 flex-wrap justify-center">
+                <Button onClick={createNewDoc} className="gap-2"><Plus className="h-4 w-4"/>New Document</Button>
+                <Button variant="outline" className="gap-2" onClick={() => wordRef.current?.click()}>
+                  <Upload className="h-4 w-4"/>Import Word File
                 </Button>
               </div>
             </div>
