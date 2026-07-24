@@ -81,6 +81,43 @@ function makeTableHtml(rows:number, cols:number): string {
   return html;
 }
 
+/* Word invoice/letterhead templates often have a big logo-style heading made
+   of one long unbroken run of colored letters (no spaces) at a huge font
+   size — e.g. "S.N.ELEVATORS" with per-letter colors. On a normal page width
+   that overflows, and the browser breaks it mid-word into a tall, ugly,
+   multi-line mess instead of the single-line logo it's meant to be.
+   This finds any such oversized leaf block, measures how wide it actually
+   renders, and shrinks it (uniformly, via CSS transform) just enough to fit
+   in one line — the same "auto-fit" behaviour Word itself uses for WordArt
+   and text boxes. Must run while attached to a real, correctly-sized DOM
+   (fontSize/family matching the real page) so scrollWidth is accurate. */
+function fitOversizedText(root: HTMLElement, maxWidth: number) {
+  const blocks = Array.from(root.querySelectorAll<HTMLElement>("p,h1,h2,h3,h4,h5,h6,div"));
+  blocks.forEach(el => {
+    // Only touch "leaf" text blocks — skip anything containing structural children.
+    if (el.querySelector("table,ul,ol,img,p,div,h1,h2,h3,h4,h5,h6")) return;
+    const text = (el.textContent || "").trim();
+    if (!text) return;
+
+    const prevWhiteSpace = el.style.whiteSpace;
+    el.style.whiteSpace = "nowrap";
+    const fullWidth = el.scrollWidth;
+    const naturalHeight = el.offsetHeight || parseFloat(getComputedStyle(el).lineHeight) || 20;
+
+    if (fullWidth > maxWidth * 1.03) {
+      const scale = Math.max(0.2, maxWidth / fullWidth);
+      const wrapper = document.createElement("div");
+      wrapper.style.cssText = `width:${maxWidth}px;height:${Math.ceil(naturalHeight * scale)}px;overflow:hidden;`;
+      el.style.transformOrigin = "left top";
+      el.style.transform = `scale(${scale})`;
+      el.parentElement?.insertBefore(wrapper, el);
+      wrapper.appendChild(el);
+    } else {
+      el.style.whiteSpace = prevWhiteSpace;
+    }
+  });
+}
+
 /* ─── Image Editor Modal ─── */
 type ImgTab="adjust"|"transform"|"crop"|"draw";
 type DrawTool="pen"|"highlighter"|"eraser"|"rect"|"circle"|"arrow"|"text";
@@ -630,7 +667,20 @@ export default function DocumentEditorPage(){
         dom.querySelectorAll("td,th").forEach(c=>{(c as HTMLElement).setAttribute("style",cellStyleFor((c as HTMLElement).tagName==="TH"));});
         dom.querySelectorAll("img").forEach(img=>{(img as HTMLElement).style.cssText="max-width:100%;height:auto;display:block;margin:8px 0;cursor:pointer;";});
 
-        const pageHtml=`<div class="doc-page doc-page-text">${dom.body.innerHTML}</div>`;
+        // Shrink any oversized single-line "logo" heading so it fits the
+        // page in one line instead of breaking into a multi-line mess —
+        // has to happen in a real, attached, correctly-sized DOM so the
+        // width measurements are accurate.
+        const contentWidth = PAGE_WIDTH - 192; // page width minus 96px margins each side
+        const measureBox = document.createElement("div");
+        measureBox.style.cssText = `position:fixed;left:-99999px;top:0;width:${contentWidth}px;font-family:${fontFamily};font-size:11pt;line-height:1.15;`;
+        measureBox.innerHTML = dom.body.innerHTML;
+        document.body.appendChild(measureBox);
+        fitOversizedText(measureBox, contentWidth);
+        const fixedHtml = measureBox.innerHTML;
+        document.body.removeChild(measureBox);
+
+        const pageHtml=`<div class="doc-page doc-page-text">${fixedHtml}</div>`;
         const newTitle=file.name.replace(/\.docx?$/i,"");
         const{data,error}=await supabase.from("user_documents").insert({user_id:profile?.id,title:newTitle,content:pageHtml}).select("*").single();
         if(error)throw error;
