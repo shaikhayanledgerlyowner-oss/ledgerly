@@ -3,7 +3,6 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-
     <!-- Primary SEO -->
     <title>Ledgerly — Smart Ledger, GST Invoice & Billing Tools for Small Business</title>
     <meta
@@ -14,10 +13,8 @@
     <meta name="robots" content="index, follow" />
     <meta name="theme-color" content="#1e3a5f" />
     <meta name="keywords" content="GST invoice, ledger, billing software, small business India, invoice generator, quotation maker, expense tracker, PDF export" />
-
     <!-- Canonical -->
     <link rel="canonical" href="https://ledgerly-smart-manage.vercel.app/" />
-
     <!-- Open Graph -->
     <meta property="og:title" content="Ledgerly — Smart Ledger & GST Invoice Tools" />
     <meta
@@ -31,7 +28,6 @@
     <meta property="og:image:height" content="630" />
     <meta property="og:site_name" content="Ledgerly" />
     <meta property="og:locale" content="en_IN" />
-
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Ledgerly — Smart Ledger & GST Invoice Tools" />
@@ -40,11 +36,9 @@
       content="Smart ledger, GST invoicing, quotation, billing and PDF tools for Indian small businesses."
     />
     <meta name="twitter:image" content="https://ledgerly-smart-manage.vercel.app/logo.png" />
-
     <!-- PWA / Favicon -->
     <link rel="icon" type="image/png" href="/logo.png" />
     <link rel="apple-touch-icon" href="/icon-192x192.png" />
-
     <!-- Structured Data (JSON-LD) -->
     <script type="application/ld+json">
     {
@@ -64,15 +58,23 @@
     }
     </script>
   </head>
-
   <body>
     <div id="root"></div>
 
-    <!-- Razorpay Checkout Script -->
+    <!-- Razorpay Checkout -->
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 
     <!-- Mammoth.js — Word (.docx) to HTML converter -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+
+    <!-- PDF.js — PDF viewing & parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+      if (typeof pdfjsLib !== 'undefined') {
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      }
+    </script>
 
     <script type="module" src="/src/main.tsx"></script>
   </body>
