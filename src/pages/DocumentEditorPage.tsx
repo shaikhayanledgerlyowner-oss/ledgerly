@@ -29,6 +29,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { cn } from "@/lib/utils";
 
 declare const mammoth: any;
+// PDF import needs pdf.js loaded globally — add to index.html if not already there:
+//   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+//   <script>pdfjsLib.GlobalWorkerOptions.workerSrc =
+//     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
 declare const pdfjsLib: any;
 
 interface Doc { id: string; title: string; content: string; updated_at: string; }
@@ -42,7 +46,9 @@ const COLORS = [
   "#cc0000","#e69138","#f1c232","#6aa84f","#45818e","#3d85c6","#674ea7","#a64d79",
 ];
 
-/* ─── Arrow draw helper ─── */
+const PAGE_WIDTH = 816;   // 8.5in @ 96dpi — matches Word/Google Docs "Letter" page
+const PAGE_MIN_HEIGHT = 1056; // 11in @ 96dpi
+
 function drawArrow(ctx:CanvasRenderingContext2D,x1:number,y1:number,x2:number,y2:number,w:number,color:string){
   const hl=Math.max(12,w*5),angle=Math.atan2(y2-y1,x2-x1);
   ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=w;ctx.lineCap="round";
@@ -53,132 +59,26 @@ function drawArrow(ctx:CanvasRenderingContext2D,x1:number,y1:number,x2:number,y2
   ctx.closePath();ctx.fill();
 }
 
-/* ─── Fix Word logo fragments: merge consecutive large-font short paragraphs inline ─── */
-function fixWordLayout(root:HTMLElement){
-  // 1. Remove absolute/fixed positioning from ALL elements
-  root.querySelectorAll<HTMLElement>("*").forEach(el=>{
-    const s=el.style;
-    if(!s) return;
-    if(s.position==="absolute"||s.position==="fixed") s.position="relative";
-    if(parseFloat(s.marginTop||"0")<0) s.marginTop="0";
-    if(parseFloat(s.marginLeft||"0")<0) s.marginLeft="0";
-    if(s.transform) s.transform="";
-    if(s.textIndent&&parseFloat(s.textIndent)<0) s.textIndent="0";
-  });
+const cellStyleFor = (isHead: boolean) =>
+  `border:1px solid #999;padding:5px 8px;min-width:40px;word-break:break-word;vertical-align:top;${isHead?"background:#f0f0f0;font-weight:600;":"background:#ffffff;"}`;
 
-  // 2. Detect logo-like paragraphs (short text, large font) and merge them inline
-  const paras=Array.from(root.querySelectorAll<HTMLElement>("p,div"));
-  let i=0;
-  while(i<paras.length){
-    const p=paras[i];
-    if(!p.isConnected){i++;continue;}
-    const text=(p.textContent||"").trim();
-    // Check max font size in this element
-    let maxFs=0;
-    p.querySelectorAll<HTMLElement>("[style]").forEach(el=>{
-      const m=el.style.fontSize?.match(/([\d.]+)\s*(px|pt)/);
-      if(m){let v=parseFloat(m[1]);if(m[2]==="pt")v*=1.333;if(v>maxFs)maxFs=v;}
-    });
-    const directFs=p.style.fontSize?.match(/([\d.]+)\s*(px|pt)/);
-    if(directFs){let v=parseFloat(directFs[1]);if(directFs[2]==="pt")v*=1.333;if(v>maxFs)maxFs=v;}
-
-    const isLogoLike=text.length>0&&text.length<=40&&maxFs>=20;
-    if(!isLogoLike){i++;continue;}
-
-    // Collect consecutive logo-like siblings
-    const group:HTMLElement[]=[p];
-    let j=i+1;
-    while(j<paras.length){
-      const q=paras[j];
-      if(!q.isConnected){j++;continue;}
-      if(q.previousElementSibling!==group[group.length-1]||q.parentElement!==p.parentElement) break;
-      const qt=(q.textContent||"").trim();
-      let qFs=0;
-      q.querySelectorAll<HTMLElement>("[style]").forEach(el=>{
-        const m=el.style.fontSize?.match(/([\d.]+)\s*(px|pt)/);
-        if(m){let v=parseFloat(m[1]);if(m[2]==="pt")v*=1.333;if(v>qFs)qFs=v;}
-      });
-      const qDirect=q.style.fontSize?.match(/([\d.]+)\s*(px|pt)/);
-      if(qDirect){let v=parseFloat(qDirect[1]);if(qDirect[2]==="pt")v*=1.333;if(v>qFs)qFs=v;}
-      if(qt.length>0&&qt.length<=40&&qFs>=20){group.push(q);j++;}
-      else break;
+/* Plain table markup — no baked-in buttons. Row/column insertion is handled
+   globally by the hover "+" system further down, so it works the same way
+   whether the table was typed, inserted, or came from an import. */
+function makeTableHtml(rows:number, cols:number): string {
+  let html = `<table style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0;">`;
+  for (let r = 0; r < rows; r++) {
+    html += "<tr>";
+    for (let c = 0; c < cols; c++) {
+      const isHead = r === 0;
+      html += isHead
+        ? `<th style="${cellStyleFor(true)}">Header ${c+1}</th>`
+        : `<td style="${cellStyleFor(false)}">&nbsp;</td>`;
     }
-
-    if(group.length>=2){
-      // Merge into one inline-flex paragraph
-      const wrap=document.createElement("p");
-      wrap.style.cssText="display:flex;align-items:baseline;flex-wrap:wrap;gap:0;margin:.1em 0;line-height:1.1;";
-      group.forEach(gp=>{
-        const span=document.createElement("span");
-        span.style.cssText="display:inline;white-space:pre;";
-        span.innerHTML=gp.innerHTML;
-        wrap.appendChild(span);
-      });
-      group[0].parentElement?.insertBefore(wrap,group[0]);
-      group.forEach(gp=>gp.remove());
-      i=j;
-    } else {
-      i++;
-    }
+    html += "</tr>";
   }
-}
-
-/* ─── Table with add row/col buttons ─── */
-function makeEditableTable(rows:number,cols:number):string{
-  let html=`<div class="ld-table-wrap" style="position:relative;margin:8px 0;overflow-x:auto;">`;
-  html+=`<table class="ld-table" style="border-collapse:collapse;width:100%;table-layout:fixed;">`;
-  for(let r=0;r<rows;r++){
-    html+=`<tr>`;
-    for(let c=0;c<cols;c++){
-      const isH=r===0;
-      const sty=`border:1px solid #999;padding:5px 8px;min-width:60px;word-break:break-word;vertical-align:top;${isH?"background:#f0f0f0;font-weight:600;":""}`;
-      html+=isH?`<th style="${sty}" contenteditable="true">H${c+1}</th>`:`<td style="${sty}" contenteditable="true">&nbsp;</td>`;
-    }
-    html+=`</tr>`;
-  }
-  html+=`</table>`;
-  // Add row button
-  html+=`<button class="ld-add-row" onclick="(function(btn){
-    var tbl=btn.parentElement.querySelector('table');
-    var cols=tbl.rows[0]?tbl.rows[0].cells.length:1;
-    var tr=tbl.insertRow(-1);
-    for(var i=0;i<cols;i++){var td=tr.insertCell(i);td.style='border:1px solid #999;padding:5px 8px;min-width:60px;word-break:break-word;vertical-align:top;';td.contentEditable='true';td.innerHTML='&nbsp;';}
-  })(this)" style="display:flex;align-items:center;gap:4px;margin-top:4px;padding:3px 10px;font-size:11px;border:1px dashed #aaa;border-radius:4px;background:transparent;cursor:pointer;color:#555;width:auto;">+ Add Row</button>`;
-  // Add col button
-  html+=`<button class="ld-add-col" onclick="(function(btn){
-    var tbl=btn.parentElement.querySelector('table');
-    Array.from(tbl.rows).forEach(function(row,ri){
-      var cell=ri===0?tbl.rows[ri].insertCell(-1):tbl.rows[ri].insertCell(-1);
-      cell.style='border:1px solid #999;padding:5px 8px;min-width:60px;word-break:break-word;vertical-align:top;'+(ri===0?'background:#f0f0f0;font-weight:600;':'');
-      cell.contentEditable='true';cell.innerHTML=ri===0?'H':'&nbsp;';
-    });
-  })(this)" style="display:inline-flex;align-items:center;gap:4px;margin-top:2px;margin-left:4px;padding:3px 10px;font-size:11px;border:1px dashed #aaa;border-radius:4px;background:transparent;cursor:pointer;color:#555;">+ Add Column</button>`;
-  html+=`</div><p><br></p>`;
+  html += "</table>";
   return html;
-}
-
-/* ─── Inject add row/col buttons into imported tables ─── */
-function injectTableButtons(root:HTMLElement){
-  root.querySelectorAll("table").forEach(tbl=>{
-    if(tbl.closest(".ld-table-wrap")) return;
-    const wrap=document.createElement("div");
-    wrap.className="ld-table-wrap";
-    wrap.style.cssText="position:relative;margin:8px 0;overflow-x:auto;";
-    tbl.parentElement?.insertBefore(wrap,tbl);
-    wrap.appendChild(tbl);
-
-    const addRow=document.createElement("button");
-    addRow.textContent="+ Add Row";
-    addRow.style.cssText="display:flex;align-items:center;gap:4px;margin-top:4px;padding:3px 10px;font-size:11px;border:1px dashed #aaa;border-radius:4px;background:transparent;cursor:pointer;color:#555;";
-    addRow.setAttribute("onclick","(function(btn){var tbl=btn.parentElement.querySelector('table');var cols=tbl.rows[0]?tbl.rows[0].cells.length:1;var tr=tbl.insertRow(-1);for(var i=0;i<cols;i++){var td=tr.insertCell(i);td.style='border:1px solid #999;padding:5px 8px;min-width:60px;word-break:break-word;vertical-align:top;';td.contentEditable='true';td.innerHTML='&nbsp;';}})(this)");
-    wrap.appendChild(addRow);
-
-    const addCol=document.createElement("button");
-    addCol.textContent="+ Add Column";
-    addCol.style.cssText="display:inline-flex;align-items:center;gap:4px;margin-top:2px;margin-left:4px;padding:3px 10px;font-size:11px;border:1px dashed #aaa;border-radius:4px;background:transparent;cursor:pointer;color:#555;";
-    addCol.setAttribute("onclick","(function(btn){var tbl=btn.parentElement.querySelector('table');Array.from(tbl.rows).forEach(function(row,ri){var cell=tbl.rows[ri].insertCell(-1);cell.style='border:1px solid #999;padding:5px 8px;min-width:60px;word-break:break-word;vertical-align:top;'+(ri===0?'background:#f0f0f0;font-weight:600;':'');cell.contentEditable='true';cell.innerHTML=ri===0?'H':'&nbsp;';});})(this)");
-    wrap.appendChild(addCol);
-  });
 }
 
 /* ─── Image Editor Modal ─── */
@@ -276,7 +176,6 @@ function ImageEditorModal({src,onSave,onDelete,onReplace,onClose}:{
 
   return(
     <div className="fixed inset-0 z-[200] flex flex-col" style={{background:"rgba(0,0,0,0.95)"}}>
-      {/* Top bar */}
       <div style={{background:"#1a1a1a",borderBottom:"1px solid rgba(255,255,255,0.12)",padding:"7px 12px",display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
         <span style={{color:"white",fontWeight:700,fontSize:13,marginRight:4}}>Edit Image</span>
         {(["draw","adjust","transform","crop"] as ImgTab[]).map(t=>Btn(t.charAt(0).toUpperCase()+t.slice(1),tab===t,()=>setTab(t)))}
@@ -295,7 +194,6 @@ function ImageEditorModal({src,onSave,onDelete,onReplace,onClose}:{
           <button onClick={handleSave} style={{padding:"4px 16px",borderRadius:6,border:"none",background:"white",color:"black",cursor:"pointer",fontSize:12,fontWeight:700}}>Save</button>
         </div>
       </div>
-      {/* Sub toolbar */}
       <div style={{background:"#111",padding:"5px 12px",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",minHeight:42}}>
         {tab==="draw"&&<>
           {([["pen",<Pencil className="h-4 w-4"/>],["highlighter",<Highlighter className="h-4 w-4"/>],["eraser",<Eraser className="h-4 w-4"/>],["rect",<Square className="h-4 w-4"/>],["circle",<Circle className="h-4 w-4"/>],["arrow",<ArrowUpRight className="h-4 w-4"/>],["text",<Type className="h-4 w-4"/>]] as [DrawTool,React.ReactNode][]).map(([t,icon])=>Btn(icon,tool===t,()=>setTool(t)))}
@@ -326,7 +224,6 @@ function ImageEditorModal({src,onSave,onDelete,onReplace,onClose}:{
           {Btn("Clear",false,()=>setCropRect(null))}
         </>}
       </div>
-      {/* Canvas area */}
       <div style={{flex:1,overflow:"auto",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
         {!ready&&<span style={{color:"white",fontSize:13}}>Loading image…</span>}
         <div style={{position:"relative",transform:`scale(${zoom})`,transformOrigin:"center center"}}>
@@ -418,7 +315,6 @@ export default function DocumentEditorPage(){
     return list;
   },[docs,docSearch,docSort]);
 
-  // Track cursor selection so toolbar actions restore it
   useEffect(()=>{
     const h=()=>{const s=window.getSelection();if(!s||s.rangeCount===0)return;const r=s.getRangeAt(0);if(editorRef.current?.contains(r.commonAncestorContainer))savedRange.current=r.cloneRange();};
     document.addEventListener("selectionchange",h);return()=>document.removeEventListener("selectionchange",h);
@@ -438,9 +334,198 @@ export default function DocumentEditorPage(){
     ed.addEventListener("click",fn);return()=>ed.removeEventListener("click",fn);
   },[sel]);
 
+  /* ── Word-style table resize + hover "+" insert (same size as neighbor) ── */
+  useEffect(()=>{
+    const editor=editorRef.current;
+    if(!editor)return;
+
+    const RESIZE_ZONE=6, GUTTER=22, TOL=10;
+    type Resizing =
+      | {type:"col"; colgroup:HTMLTableColElement[]; colIndex:number; startX:number; startWidth:number}
+      | {type:"row"; row:HTMLTableRowElement; startY:number; startHeight:number}
+      | null;
+    let resizing:Resizing=null;
+    let hoverBtn:HTMLButtonElement|null=null;
+    const removeBtn=()=>{hoverBtn?.remove();hoverBtn=null;};
+
+    const ensureColgroup=(table:HTMLTableElement):HTMLTableColElement[]=>{
+      let cg=table.querySelector(":scope > colgroup") as HTMLElement|null;
+      const firstRow=table.rows[0];
+      if(!firstRow)return[];
+      if(!cg){
+        cg=document.createElement("colgroup");
+        for(let i=0;i<firstRow.cells.length;i++){
+          const col=document.createElement("col");
+          col.style.width=firstRow.cells[i].getBoundingClientRect().width+"px";
+          cg.appendChild(col);
+        }
+        table.insertBefore(cg,table.firstChild);
+      }else{
+        while(cg.children.length<firstRow.cells.length){
+          const col=document.createElement("col");
+          const prev=cg.children[cg.children.length-1] as HTMLElement|undefined;
+          col.style.width=(prev?.style.width)||"80px";
+          cg.appendChild(col);
+        }
+      }
+      return Array.from(cg.children) as HTMLTableColElement[];
+    };
+
+    // New row copies the height of the row it's inserted next to (same size).
+    const insertRowAt=(table:HTMLTableElement,afterIndex:number)=>{
+      const rows=table.rows;
+      const ref=rows[afterIndex];
+      const cellCount=ref?ref.cells.length:rows[0]?.cells.length||1;
+      const refHeight=ref?ref.getBoundingClientRect().height:undefined;
+      const tr=document.createElement("tr");
+      for(let i=0;i<cellCount;i++){
+        const td=document.createElement("td");
+        td.innerHTML="&nbsp;";
+        td.setAttribute("style",cellStyleFor(false)+(refHeight?`height:${refHeight}px;`:""));
+        tr.appendChild(td);
+      }
+      if(ref)ref.after(tr);else table.appendChild(tr);
+      triggerSave();
+      toast.success("Row added");
+    };
+
+    // New column copies the width of the column it's inserted next to (same size).
+    const insertColAt=(table:HTMLTableElement,afterIndex:number)=>{
+      const cols=ensureColgroup(table);
+      const refWidth=cols[afterIndex]?.style.width||"80px";
+      const col=document.createElement("col");
+      col.style.width=refWidth;
+      const refCol=cols[afterIndex];
+      if(refCol)refCol.after(col);else table.querySelector("colgroup")!.appendChild(col);
+
+      Array.from(table.rows).forEach(row=>{
+        const isHead=row.cells[0]?.tagName==="TH";
+        const cell=document.createElement(isHead?"th":"td");
+        cell.innerHTML=isHead?"Header":"&nbsp;";
+        cell.setAttribute("style",cellStyleFor(isHead));
+        const refCell=row.cells[afterIndex];
+        if(refCell)refCell.after(cell);else row.appendChild(cell);
+      });
+      triggerSave();
+      toast.success("Column added");
+    };
+
+    const showPlus=(x:number,y:number,onClick:()=>void)=>{
+      removeBtn();
+      const btn=document.createElement("button");
+      btn.textContent="+";
+      Object.assign(btn.style,{
+        position:"fixed",left:`${x-9}px`,top:`${y-9}px`,width:"18px",height:"18px",
+        borderRadius:"50%",border:"none",background:"#4a86e8",color:"white",
+        fontSize:"13px",lineHeight:"18px",textAlign:"center",cursor:"pointer",
+        zIndex:"9999",padding:"0",boxShadow:"0 1px 4px rgba(0,0,0,0.35)",
+      });
+      btn.onmousedown=ev=>ev.stopPropagation();
+      btn.onclick=ev=>{ev.stopPropagation();onClick();removeBtn();};
+      document.body.appendChild(btn);
+      hoverBtn=btn;
+    };
+
+    const onMouseMove=(e:MouseEvent)=>{
+      if(resizing){
+        if(resizing.type==="col"){
+          const dx=e.clientX-resizing.startX;
+          resizing.colgroup[resizing.colIndex].style.width=Math.max(30,resizing.startWidth+dx)+"px";
+        }else{
+          const dy=e.clientY-resizing.startY;
+          const h=Math.max(20,resizing.startHeight+dy)+"px";
+          Array.from(resizing.row.cells).forEach(c=>((c as HTMLElement).style.height=h));
+        }
+        return;
+      }
+      const target=e.target as HTMLElement;
+      const cell=target.closest("td,th") as HTMLTableCellElement|null;
+      if(cell){
+        const rect=cell.getBoundingClientRect();
+        const isLastCol=cell.parentElement!.lastElementChild===cell;
+        const nearRight=!isLastCol&&(rect.right-e.clientX)<RESIZE_ZONE;
+        const nearBottom=(rect.bottom-e.clientY)<RESIZE_ZONE;
+        editor.style.cursor=nearRight?"col-resize":nearBottom?"row-resize":"";
+      }else editor.style.cursor="";
+
+      const tables=editor.querySelectorAll("table");
+      let matched=false;
+      tables.forEach(table=>{
+        if(matched)return;
+        const tRect=table.getBoundingClientRect();
+        if(e.clientX>=tRect.left-GUTTER&&e.clientX<=tRect.left-2&&e.clientY>=tRect.top&&e.clientY<=tRect.bottom){
+          const rows=Array.from(table.rows);
+          for(let i=0;i<rows.length;i++){
+            const rRect=rows[i].getBoundingClientRect();
+            if(Math.abs(e.clientY-rRect.bottom)<TOL){
+              showPlus(tRect.left-11,rRect.bottom,()=>insertRowAt(table,i));
+              matched=true;break;
+            }
+          }
+        }
+        if(!matched&&e.clientY>=tRect.top-GUTTER&&e.clientY<=tRect.top-2&&e.clientX>=tRect.left&&e.clientX<=tRect.right){
+          const cells=Array.from(table.rows[0]?.cells||[]);
+          for(let j=0;j<cells.length;j++){
+            const cRect=cells[j].getBoundingClientRect();
+            if(Math.abs(e.clientX-cRect.right)<TOL){
+              showPlus(cRect.right,tRect.top-11,()=>insertColAt(table,j));
+              matched=true;break;
+            }
+          }
+        }
+      });
+      if(!matched&&hoverBtn&&!hoverBtn.matches(":hover"))removeBtn();
+    };
+
+    const onMouseDown=(e:MouseEvent)=>{
+      const target=e.target as HTMLElement;
+      const cell=target.closest("td,th") as HTMLTableCellElement|null;
+      if(!cell)return;
+      const table=cell.closest("table") as HTMLTableElement;
+      const rect=cell.getBoundingClientRect();
+      const isLastCol=cell.parentElement!.lastElementChild===cell;
+      if(!isLastCol&&(rect.right-e.clientX)<RESIZE_ZONE){
+        const colgroup=ensureColgroup(table);
+        const colIndex=Array.from(cell.parentElement!.children).indexOf(cell);
+        resizing={type:"col",colgroup,colIndex,startX:e.clientX,startWidth:parseFloat(colgroup[colIndex]?.style.width)||rect.width};
+        e.preventDefault();
+      }else if((rect.bottom-e.clientY)<RESIZE_ZONE){
+        resizing={type:"row",row:cell.parentElement as HTMLTableRowElement,startY:e.clientY,startHeight:rect.height};
+        e.preventDefault();
+      }
+    };
+    const onMouseUp=()=>{if(resizing){resizing=null;triggerSave();}};
+    const onLeave=()=>{removeBtn();editor.style.cursor="";};
+
+    editor.addEventListener("mousemove",onMouseMove);
+    editor.addEventListener("mousedown",onMouseDown);
+    editor.addEventListener("mouseleave",onLeave);
+    document.addEventListener("mouseup",onMouseUp);
+    return()=>{
+      editor.removeEventListener("mousemove",onMouseMove);
+      editor.removeEventListener("mousedown",onMouseDown);
+      editor.removeEventListener("mouseleave",onLeave);
+      document.removeEventListener("mouseup",onMouseUp);
+      removeBtn();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[sel]);
+
+  /* ── Load a doc's content into the editor. Older documents saved before
+     the multi-page layout existed are auto-wrapped in a text page so they
+     still display correctly. ── */
   const selectDoc=(doc:Doc)=>{
     setSel(doc);setTitle(doc.title);
-    requestAnimationFrame(()=>{if(editorRef.current){editorRef.current.innerHTML=doc.content||"";editorRef.current.focus();}});
+    requestAnimationFrame(()=>{
+      if(editorRef.current){
+        let content=doc.content||"";
+        if(!content.includes("doc-page")){
+          content=`<div class="doc-page doc-page-text">${content}</div>`;
+        }
+        editorRef.current.innerHTML=content;
+        editorRef.current.focus();
+      }
+    });
   };
 
   const createDoc=async()=>{
@@ -487,21 +572,28 @@ export default function DocumentEditorPage(){
   const updateFmts=()=>{try{setFormats({bold:document.queryCommandState("bold"),italic:document.queryCommandState("italic"),underline:document.queryCommandState("underline"),strikeThrough:document.queryCommandState("strikeThrough"),justifyLeft:document.queryCommandState("justifyLeft"),justifyCenter:document.queryCommandState("justifyCenter"),justifyRight:document.queryCommandState("justifyRight"),justifyFull:document.queryCommandState("justifyFull"),insertUnorderedList:document.queryCommandState("insertUnorderedList"),insertOrderedList:document.queryCommandState("insertOrderedList"),});}catch{}};
   const applyBlock=(tag:string)=>{restoreSel();document.execCommand("formatBlock",false,`<${tag}>`);updateFmts();triggerSave();};
 
-  /* ── Insert Table with + buttons ── */
   const insertTable=(rows:number,cols:number)=>{
     const ed=editorRef.current;if(!ed)return;
-    const html=makeEditableTable(rows,cols);
+    const html=makeTableHtml(rows,cols)+"<p><br></p>";
+    const range=restoreSel();
     const s=window.getSelection();
-    const r=restoreSel();
-    if(s&&s.rangeCount>0){const lr=s.getRangeAt(0);lr.deleteContents();const frag=lr.createContextualFragment(html);const last=frag.lastChild;lr.insertNode(frag);if(last){const ar=document.createRange();ar.setStartAfter(last);ar.collapse(true);s.removeAllRanges();s.addRange(ar);}}
-    else ed.innerHTML+=html;
+    if(s&&s.rangeCount>0&&range){
+      const lr=s.getRangeAt(0);
+      lr.deleteContents();
+      const frag=lr.createContextualFragment(html);
+      const last=frag.lastChild;
+      lr.insertNode(frag);
+      if(last){const ar=document.createRange();ar.setStartAfter(last);ar.collapse(true);s.removeAllRanges();s.addRange(ar);savedRange.current=ar.cloneRange();}
+    }else{
+      const page=ed.querySelector(".doc-page-text")||ed;
+      page.innerHTML+=html;
+    }
     setShowTableModal(false);triggerSave();toast.success("Table inserted!");
   };
 
-  /* ── Image upload ── */
   const handleImgUpload=(e:React.ChangeEvent<HTMLInputElement>)=>{
     const files=Array.from(e.target.files||[]);if(!files.length)return;
-    const range=restoreSel();
+    restoreSel();
     files.forEach(file=>{
       const reader=new FileReader();
       reader.onload=ev=>{
@@ -509,111 +601,98 @@ export default function DocumentEditorPage(){
         ed.focus();const html=`<img src="${src}" style="max-width:100%;height:auto;display:block;margin:6px 0;cursor:pointer;"/>`;
         const s=window.getSelection();
         if(s&&s.rangeCount>0){const lr=s.getRangeAt(0);const frag=lr.createContextualFragment(html);lr.insertNode(frag);lr.collapse(false);}
-        else ed.innerHTML+=html;triggerSave();
+        else{const page=ed.querySelector(".doc-page-text")||ed;page.innerHTML+=html;}
+        triggerSave();
       };reader.readAsDataURL(file);
     });e.target.value="";
   };
 
-  /* ── Word Import — preserves layout, injects + buttons on tables ── */
-  /* ── Convert file via Edge Function (Word or PDF → page images) ── */
-  const convertViaEdgeFunction=async(file:File):Promise<string[]>=>{
-    const fd=new FormData();
-    fd.append("file",file);
-    // Use your Supabase project URL here
-    const SUPABASE_URL=import.meta.env.VITE_SUPABASE_URL||"";
-    const SUPABASE_ANON=import.meta.env.VITE_SUPABASE_ANON_KEY||"";
-    const res=await fetch(`${SUPABASE_URL}/functions/v1/convert-docx`,{
-      method:"POST",body:fd,
-      headers:{Authorization:`Bearer ${SUPABASE_ANON}`},
-    });
-    if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error||`HTTP ${res.status}`);}
-    const json=await res.json();
-    return json.pages as string[];
-  };
-
-  /* ── Word Import — uses Edge Function for pixel-perfect render ── */
+  /* ── Word import — pure client-side via mammoth.js (no backend needed).
+     Produces one flowing, fully-editable page (tables/images/headings/lists
+     preserved). True automatic re-pagination the way Word paginates a long
+     document is a much bigger feature — say if you want that added next;
+     for now long documents will scroll within one continuous page, same as
+     Google Docs does for imported HTML. ── */
   const handleWordUpload=async(e:React.ChangeEvent<HTMLInputElement>)=>{
     const files=Array.from(e.target.files||[]);if(!files.length)return;e.target.value="";
+    if(typeof mammoth==="undefined"){toast.error("Word converter not loaded — refresh the page and try again.");return;}
     setImporting(true);
     for(const file of files){
       try{
-        toast.loading(`Converting "${file.name}"…`,{id:"import"});
-        const pages=await convertViaEdgeFunction(file);
-        // Each page = one full-width image, stacked
-        const pagesHtml=pages.map(src=>
-          `<div style="margin:0;line-height:0;"><img src="${src}" style="width:100%;height:auto;display:block;cursor:pointer;"/></div>`
-        ).join("");
+        const buf=await file.arrayBuffer();
+        const result=await mammoth.convertToHtml({arrayBuffer:buf},{styleMap:[
+          "p[style-name='Heading 1'] => h1:fresh",
+          "p[style-name='Heading 2'] => h2:fresh",
+          "p[style-name='Heading 3'] => h3:fresh",
+        ]});
+        const dom=new DOMParser().parseFromString(result.value,"text/html");
+        dom.querySelectorAll("table").forEach(t=>{(t as HTMLElement).style.cssText="border-collapse:collapse;width:100%;margin:8px 0;table-layout:fixed;";});
+        dom.querySelectorAll("td,th").forEach(c=>{(c as HTMLElement).setAttribute("style",cellStyleFor((c as HTMLElement).tagName==="TH"));});
+        dom.querySelectorAll("img").forEach(img=>{(img as HTMLElement).style.cssText="max-width:100%;height:auto;display:block;margin:8px 0;cursor:pointer;";});
+
+        const pageHtml=`<div class="doc-page doc-page-text">${dom.body.innerHTML}</div>`;
         const newTitle=file.name.replace(/\.docx?$/i,"");
-        const{data,error}=await supabase.from("user_documents")
-          .insert({user_id:profile?.id,title:newTitle,content:pagesHtml}).select("*").single();
+        const{data,error}=await supabase.from("user_documents").insert({user_id:profile?.id,title:newTitle,content:pageHtml}).select("*").single();
         if(error)throw error;
-        toast.success(`"${newTitle}" imported (${pages.length} page${pages.length>1?"s":""})`,{id:"import"});
+        toast.success(`"${newTitle}" imported!`);
         await loadDocs();selectDoc(data as Doc);
       }catch(err:any){
-        toast.error(`Failed: "${file.name}" — ${err?.message||"Unknown error"}`,{id:"import"});
+        toast.error(`Failed: "${file.name}" — ${err?.message||"Unknown error"}`);
       }
     }
     setImporting(false);
   };
 
-  /* ── PDF Import — same Edge Function OR local pdf.js fallback ── */
+  /* ── PDF import — renders every page through pdf.js's own renderer, then
+     drops each page in as its OWN full-bleed page (no padding squeezing
+     it down) at the same width as every other page in the app, so it
+     genuinely looks like separate A4/Letter sheets — pixel-identical to
+     the source PDF, because it IS the rendered PDF page. Trade-off: page
+     content is an image, not editable text (see note in handleWordUpload
+     if you want an editable-text import path added too). ── */
   const handlePdfUpload=async(e:React.ChangeEvent<HTMLInputElement>)=>{
     const files=Array.from(e.target.files||[]);if(!files.length)return;e.target.value="";
+    if(typeof pdfjsLib==="undefined"){toast.error("PDF renderer not loaded — refresh the page and try again.");return;}
     setImporting(true);
     for(const file of files){
       try{
-        toast.loading(`Converting "${file.name}"…`,{id:"import"});
-        let pages:string[]=[];
-
-        // Try Edge Function first (best quality)
-        try{
-          pages=await convertViaEdgeFunction(file);
-        }catch{
-          // Fallback: local pdf.js
-          if(typeof pdfjsLib==="undefined") throw new Error("PDF renderer not available");
-          const buf=await file.arrayBuffer();
-          const pdf=await pdfjsLib.getDocument({data:buf}).promise;
-          for(let i=1;i<=pdf.numPages;i++){
-            const page=await pdf.getPage(i);
-            const vp0=page.getViewport({scale:1});
-            const vp=page.getViewport({scale:Math.min(2, 816/vp0.width)});
-            const canvas=document.createElement("canvas");
-            canvas.width=vp.width;canvas.height=vp.height;
-            await page.render({canvasContext:canvas.getContext("2d")!,viewport:vp}).promise;
-            pages.push(canvas.toDataURL("image/jpeg",0.92));
-          }
+        const buf=await file.arrayBuffer();
+        const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+        let pagesHtml="";
+        for(let i=1;i<=pdf.numPages;i++){
+          const page=await pdf.getPage(i);
+          const vp=page.getViewport({scale:2});
+          const canvas=document.createElement("canvas");
+          canvas.width=vp.width;canvas.height=vp.height;
+          await page.render({canvasContext:canvas.getContext("2d")!,viewport:vp}).promise;
+          const dataUrl=canvas.toDataURL("image/jpeg",0.95);
+          pagesHtml+=`<div class="doc-page doc-page-image"><img src="${dataUrl}"/></div>`;
         }
-
-        const pagesHtml=pages.map(src=>
-          `<div style="margin:0;line-height:0;"><img src="${src}" style="width:100%;height:auto;display:block;cursor:pointer;"/></div>`
-        ).join("");
         const newTitle=file.name.replace(/\.pdf$/i,"");
-        const{data,error}=await supabase.from("user_documents")
-          .insert({user_id:profile?.id,title:newTitle,content:pagesHtml}).select("*").single();
+        const{data,error}=await supabase.from("user_documents").insert({user_id:profile?.id,title:newTitle,content:pagesHtml}).select("*").single();
         if(error)throw error;
-        toast.success(`"${newTitle}" imported (${pages.length} page${pages.length>1?"s":""})`,{id:"import"});
+        toast.success(`"${newTitle}" imported (${pdf.numPages} page${pdf.numPages>1?"s":""})`);
         await loadDocs();selectDoc(data as Doc);
       }catch(err:any){
-        toast.error(`Failed: "${file.name}" — ${err?.message||"Unknown error"}`,{id:"import"});
+        toast.error(`Failed: "${file.name}" — ${err?.message||"Unknown error"}`);
       }
     }
     setImporting(false);
   };
 
-  /* ── Export / Print ── */
   const exportCSS=`
-    body{font-family:Calibri,Arial,sans-serif;width:816px;margin:0 auto;padding:96px;line-height:1.15;font-size:11pt;color:#000;}
+    body{background:#e8eaed;margin:0;padding:32px 0;display:flex;flex-direction:column;align-items:center;gap:24px;}
+    .doc-page{background:#fff;width:${PAGE_WIDTH}px;box-sizing:border-box;box-shadow:0 1px 3px rgba(0,0,0,0.3);}
+    .doc-page-text{min-height:${PAGE_MIN_HEIGHT}px;padding:96px;font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.15;color:#000;}
+    .doc-page-image{padding:0;line-height:0;}
+    .doc-page-image img{width:100%;height:auto;display:block;}
     h1{font-size:20pt;font-weight:700;margin:.3em 0;}h2{font-size:16pt;font-weight:700;margin:.3em 0;}h3{font-size:13pt;font-weight:600;margin:.3em 0;}
     table{border-collapse:collapse;width:100%;margin:6px 0;}td,th{border:1px solid #999;padding:5px 8px;vertical-align:top;}th{background:#f0f0f0;font-weight:600;}
     ul{list-style:disc;padding-left:1.5em;}ol{list-style:decimal;padding-left:1.5em;}
-    img{max-width:100%;height:auto;display:block;}
-    .ld-add-row,.ld-add-col,.ld-table-wrap>button{display:none!important;}
     @media print{
-      body{padding:0.75in;width:auto;}
-      img{page-break-inside:avoid;max-width:100%;}
-      table{page-break-inside:auto;}
-      tr{page-break-inside:avoid;}
-      div{page-break-inside:avoid;}
+      body{background:#fff;padding:0;gap:0;}
+      .doc-page{box-shadow:none;page-break-after:always;}
+      .doc-page-image img{page-break-inside:avoid;}
     }
   `;
   const fullHtml=(body:string)=>`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title><style>${exportCSS}</style></head><body>${body}</body></html>`;
@@ -622,7 +701,6 @@ export default function DocumentEditorPage(){
 
   const tb=(active:boolean)=>cn("h-7 w-7 p-0 rounded flex items-center justify-center transition-colors shrink-0 border",active?"bg-blue-100 border-blue-400 text-blue-700":"border-transparent hover:bg-gray-100 text-gray-700");
 
-  /* ══════════════ RENDER ══════════════ */
   return(
     <>
       {showTableModal&&<InsertTableModal onInsert={insertTable} onClose={()=>setShowTableModal(false)}/>}
@@ -646,14 +724,12 @@ export default function DocumentEditorPage(){
       <input ref={pdfRef} type="file" accept=".pdf" multiple className="hidden" onChange={handlePdfUpload}/>
       <input ref={imgRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImgUpload}/>
 
-      {/* Pull tab */}
       <div onClick={()=>setDrawerOpen(o=>!o)}
         className="fixed left-0 top-1/2 -translate-y-1/2 z-40 flex items-center justify-center w-4 h-14 bg-blue-600 hover:bg-blue-700 rounded-r-lg cursor-pointer shadow-lg transition-colors" title="Documents">
         <ChevronRight className={cn("h-3 w-3 text-white transition-transform",drawerOpen&&"rotate-180")}/>
       </div>
       {drawerOpen&&<div className="fixed inset-0 z-30 bg-black/20" onClick={()=>setDrawerOpen(false)}/>}
 
-      {/* Document drawer */}
       <div className={cn("fixed left-0 top-0 h-full w-64 bg-white border-r border-gray-200 z-40 flex flex-col shadow-2xl transition-transform duration-200",drawerOpen?"translate-x-0":"-translate-x-full")}>
         <div className="p-3 border-b border-gray-200 space-y-2">
           <div className="flex items-center justify-between">
@@ -701,12 +777,8 @@ export default function DocumentEditorPage(){
         </div>
       </div>
 
-      {/* ══ MAIN LAYOUT ══ */}
       <div className="flex flex-col h-[calc(100vh-56px)] overflow-hidden" style={{background:"#f0f0f0"}}>
-
-        {/* ══ RIBBON TOOLBAR ══ */}
         <div className="bg-white border-b border-gray-300 select-none" style={{boxShadow:"0 1px 3px rgba(0,0,0,0.1)"}}>
-          {/* Row 1: File */}
           <div className="flex items-center gap-1 px-3 py-1.5 border-b border-gray-200">
             <button onClick={handleSave} disabled={saving||!sel}
               className="flex items-center gap-1 px-3 py-1 rounded text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">
@@ -719,16 +791,15 @@ export default function DocumentEditorPage(){
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent>
-                <DropdownMenuItem onClick={printDoc}>🖨️ Save as PDF (Print)</DropdownMenuItem>
-                <DropdownMenuItem onClick={()=>dl(fullHtml(editorRef.current?.innerHTML||""),"text/html",`${title}.html`)}>📄 Download HTML</DropdownMenuItem>
-                <DropdownMenuItem onClick={()=>dl(editorRef.current?.innerText||"","text/plain",`${title}.txt`)}>📝 Download TXT</DropdownMenuItem>
+                <DropdownMenuItem onClick={printDoc}>Save as PDF (Print)</DropdownMenuItem>
+                <DropdownMenuItem onClick={()=>dl(fullHtml(editorRef.current?.innerHTML||""),"text/html",`${title}.html`)}>Download HTML</DropdownMenuItem>
+                <DropdownMenuItem onClick={()=>dl(editorRef.current?.innerText||"","text/plain",`${title}.txt`)}>Download TXT</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
             <div className="w-px h-5 bg-gray-300 mx-1"/>
             <button onClick={()=>exec("undo")} className={tb(false)} title="Undo"><Undo className="h-3.5 w-3.5"/></button>
             <button onClick={()=>exec("redo")} className={tb(false)} title="Redo"><Redo className="h-3.5 w-3.5"/></button>
           </div>
-          {/* Row 2: Formatting */}
           <div className="flex items-center gap-0.5 px-3 py-1 flex-wrap">
             <Select defaultValue="p" onValueChange={applyBlock}>
               <SelectTrigger className="h-7 w-28 text-xs border-gray-300"><SelectValue placeholder="Style"/></SelectTrigger>
@@ -794,7 +865,6 @@ export default function DocumentEditorPage(){
           </div>
         </div>
 
-        {/* Title bar */}
         {sel&&(
           <div className="flex items-center gap-2 px-4 py-1 bg-white border-b border-gray-200">
             <Input value={title} onChange={e=>setTitle(e.target.value)} onBlur={handleSave}
@@ -803,12 +873,15 @@ export default function DocumentEditorPage(){
           </div>
         )}
 
-        {/* ══ PAGE CANVAS ══ */}
         {sel?(
           <div className="flex-1 overflow-auto" style={{background:"#e8eaed"}}>
             <style>{`
-              #ld-ed{outline:none;min-height:100%;color:#000;}
-              #ld-ed:empty:before{content:"Start typing here…";color:#9ca3af;pointer-events:none;}
+              #ld-ed{outline:none;display:flex;flex-direction:column;align-items:center;gap:24px;padding:32px 0 96px 0;}
+              .doc-page{background:#fff;width:${PAGE_WIDTH}px;box-shadow:0 1px 8px rgba(0,0,0,0.18);box-sizing:border-box;flex-shrink:0;}
+              .doc-page-text{min-height:${PAGE_MIN_HEIGHT}px;padding:96px;outline:none;}
+              .doc-page-text:empty:before{content:"Start typing here…";color:#9ca3af;pointer-events:none;}
+              .doc-page-image{padding:0;line-height:0;}
+              .doc-page-image img{width:100%;height:auto;display:block;cursor:pointer;}
               #ld-ed h1{font-size:20pt;font-weight:700;margin:.3em 0;}
               #ld-ed h2{font-size:16pt;font-weight:700;margin:.3em 0;}
               #ld-ed h3{font-size:13pt;font-weight:600;margin:.3em 0;}
@@ -820,34 +893,18 @@ export default function DocumentEditorPage(){
               #ld-ed table{border-collapse:collapse;width:100%;margin:6px 0;}
               #ld-ed td,#ld-ed th{border:1px solid #999;padding:5px 8px;vertical-align:top;min-width:30px;word-break:break-word;}
               #ld-ed th{background:#f0f0f0;font-weight:600;}
-              #ld-ed img{max-width:100%;height:auto;cursor:pointer;display:block;margin:6px 0;}
-              #ld-ed img:hover{outline:2px solid #4a86e8;outline-offset:2px;}
+              #ld-ed .doc-page-text img{max-width:100%;height:auto;cursor:pointer;display:block;margin:6px 0;}
+              #ld-ed .doc-page-text img:hover{outline:2px solid #4a86e8;outline-offset:2px;}
               #ld-ed a{color:#1155cc;text-decoration:underline;}
-              #ld-ed p{margin:0 0 1px 0;min-height:1.15em;}
-              .ld-add-row,.ld-add-col{display:flex!important;align-items:center;gap:4px;margin-top:3px;padding:2px 10px;font-size:11px;border:1px dashed #bbb;border-radius:4px;background:white;cursor:pointer;color:#666;}
-              .ld-add-row:hover,.ld-add-col:hover{background:#f0f4ff;border-color:#4a86e8;color:#4a86e8;}
-              .ld-add-col{display:inline-flex!important;margin-left:4px;}
-              @media print{.ld-add-row,.ld-add-col,.ld-table-wrap>button{display:none!important;}}
+              #ld-ed .doc-page-text p{margin:0 0 1px 0;min-height:1.15em;}
             `}</style>
 
-            <div style={{display:"flex",justifyContent:"center",padding:"32px 16px 80px 16px"}}>
-              <div style={{transform:`scale(${pageZoom/100})`,transformOrigin:"top center",transition:"transform 0.1s"}}>
-                {/* A4 / Letter page */}
-                <div style={{
-                  background:"#fff",width:"816px",minHeight:"1056px",
-                  padding:"96px 96px",
-                  boxShadow:"0 1px 8px rgba(0,0,0,0.18)",
-                  fontFamily:fontFamily,fontSize:fontSize+"pt",lineHeight:"1.15",
-                  wordBreak:"break-word",boxSizing:"border-box" as any,color:"#000",
-                }}>
-                  <div id="ld-ed" ref={editorRef} contentEditable suppressContentEditableWarning
-                    onInput={triggerSave} onKeyUp={updateFmts} onMouseUp={updateFmts}
-                    style={{minHeight:"864px"}}/>
-                </div>
-              </div>
+            <div style={{transform:`scale(${pageZoom/100})`,transformOrigin:"top center",transition:"transform 0.1s",display:"flex",justifyContent:"center"}}>
+              <div id="ld-ed" ref={editorRef} contentEditable suppressContentEditableWarning
+                onInput={triggerSave} onKeyUp={updateFmts} onMouseUp={updateFmts}
+                style={{fontFamily,fontSize:fontSize+"pt",lineHeight:"1.15",color:"#000"}}/>
             </div>
 
-            {/* Zoom bar */}
             <div style={{position:"fixed",bottom:16,right:24,display:"flex",alignItems:"center",gap:6,background:"white",border:"1px solid #d0d0d0",borderRadius:20,padding:"4px 12px",boxShadow:"0 2px 8px rgba(0,0,0,0.15)",zIndex:30}}>
               <button onClick={()=>setPageZoom(z=>Math.max(25,z-10))} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-600"><ZoomOut className="h-4 w-4"/></button>
               <input type="range" min={25} max={200} step={5} value={pageZoom} onChange={e=>setPageZoom(Number(e.target.value))} style={{width:100,accentColor:"#4a86e8"}}/>
