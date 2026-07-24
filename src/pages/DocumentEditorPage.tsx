@@ -515,81 +515,87 @@ export default function DocumentEditorPage(){
   };
 
   /* ── Word Import — preserves layout, injects + buttons on tables ── */
+  /* ── Convert file via Edge Function (Word or PDF → page images) ── */
+  const convertViaEdgeFunction=async(file:File):Promise<string[]>=>{
+    const fd=new FormData();
+    fd.append("file",file);
+    // Use your Supabase project URL here
+    const SUPABASE_URL=import.meta.env.VITE_SUPABASE_URL||"";
+    const SUPABASE_ANON=import.meta.env.VITE_SUPABASE_ANON_KEY||"";
+    const res=await fetch(`${SUPABASE_URL}/functions/v1/convert-docx`,{
+      method:"POST",body:fd,
+      headers:{Authorization:`Bearer ${SUPABASE_ANON}`},
+    });
+    if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error||`HTTP ${res.status}`);}
+    const json=await res.json();
+    return json.pages as string[];
+  };
+
+  /* ── Word Import — uses Edge Function for pixel-perfect render ── */
   const handleWordUpload=async(e:React.ChangeEvent<HTMLInputElement>)=>{
     const files=Array.from(e.target.files||[]);if(!files.length)return;e.target.value="";
-    if(typeof mammoth==="undefined"){toast.error("Word converter not loaded — please refresh.");return;}
     setImporting(true);
     for(const file of files){
       try{
-        const buf=await file.arrayBuffer();
-        const result=await mammoth.convertToHtml({arrayBuffer:buf},{
-          styleMap:[
-            "p[style-name='Heading 1'] => h1:fresh",
-            "p[style-name='Heading 2'] => h2:fresh",
-            "p[style-name='Heading 3'] => h3:fresh",
-            "p[style-name='Title'] => h1:fresh",
-          ],
-          convertImage:mammoth.images.imgElement((img:any)=>img.read("base64").then((d:string)=>({src:`data:${img.contentType};base64,${d}`}))),
-        });
-
-        const parser=new DOMParser();
-        const dom=parser.parseFromString(result.value,"text/html");
-
-        // Fix layout issues from Word
-        fixWordLayout(dom.body);
-
-        // Style tables + inject + buttons
-        dom.querySelectorAll("table").forEach(t=>{
-          (t as HTMLElement).style.cssText="border-collapse:collapse;width:100%;margin:6px 0;";
-        });
-        dom.querySelectorAll("td,th").forEach(c=>{
-          const el=c as HTMLElement;
-          el.style.cssText+="border:1px solid #999;padding:5px 8px;vertical-align:top;word-break:break-word;min-width:40px;";
-          el.setAttribute("contenteditable","true");
-        });
-        dom.querySelectorAll("th").forEach(c=>{(c as HTMLElement).style.background="#f0f0f0";(c as HTMLElement).style.fontWeight="600";});
-        dom.querySelectorAll("img").forEach(img=>{(img as HTMLElement).style.cssText="max-width:100%;height:auto;display:block;margin:6px 0;cursor:pointer;";});
-
-        injectTableButtons(dom.body);
-
-        const styledHtml=dom.body.innerHTML;
+        toast.loading(`Converting "${file.name}"…`,{id:"import"});
+        const pages=await convertViaEdgeFunction(file);
+        // Each page = one full-width image, stacked
+        const pagesHtml=pages.map(src=>
+          `<div style="margin:0;line-height:0;"><img src="${src}" style="width:100%;height:auto;display:block;cursor:pointer;"/></div>`
+        ).join("");
         const newTitle=file.name.replace(/\.docx?$/i,"");
-        const{data,error}=await supabase.from("user_documents").insert({user_id:profile?.id,title:newTitle,content:styledHtml}).select("*").single();
+        const{data,error}=await supabase.from("user_documents")
+          .insert({user_id:profile?.id,title:newTitle,content:pagesHtml}).select("*").single();
         if(error)throw error;
-        await loadDocs();selectDoc(data as Doc);toast.success(`"${newTitle}" imported!`);
-      }catch(err:any){toast.error(`Failed: "${file.name}" — ${err?.message||"Unknown error"}`);}
+        toast.success(`"${newTitle}" imported (${pages.length} page${pages.length>1?"s":""})`,{id:"import"});
+        await loadDocs();selectDoc(data as Doc);
+      }catch(err:any){
+        toast.error(`Failed: "${file.name}" — ${err?.message||"Unknown error"}`,{id:"import"});
+      }
     }
     setImporting(false);
   };
 
-  /* ── PDF Import — each page as image, stacked, no split ── */
+  /* ── PDF Import — same Edge Function OR local pdf.js fallback ── */
   const handlePdfUpload=async(e:React.ChangeEvent<HTMLInputElement>)=>{
     const files=Array.from(e.target.files||[]);if(!files.length)return;e.target.value="";
-    if(typeof pdfjsLib==="undefined"){toast.error("PDF renderer not loaded — please refresh.");return;}
     setImporting(true);
     for(const file of files){
       try{
-        const buf=await file.arrayBuffer();
-        const pdf=await pdfjsLib.getDocument({data:buf}).promise;
-        const totalPages=pdf.numPages;
-        let pagesHtml="";
-        for(let i=1;i<=totalPages;i++){
-          const page=await pdf.getPage(i);
-          // Scale to ~816px wide (letter width at 96dpi)
-          const vp0=page.getViewport({scale:1});
-          const scale=816/vp0.width;
-          const vp=page.getViewport({scale});
-          const canvas=document.createElement("canvas");
-          canvas.width=vp.width;canvas.height=vp.height;
-          await page.render({canvasContext:canvas.getContext("2d")!,viewport:vp}).promise;
-          // Each page = one img, no page-break
-          pagesHtml+=`<div style="margin-bottom:0;"><img src="${canvas.toDataURL("image/jpeg",0.94)}" style="width:100%;display:block;cursor:pointer;"/></div>`;
+        toast.loading(`Converting "${file.name}"…`,{id:"import"});
+        let pages:string[]=[];
+
+        // Try Edge Function first (best quality)
+        try{
+          pages=await convertViaEdgeFunction(file);
+        }catch{
+          // Fallback: local pdf.js
+          if(typeof pdfjsLib==="undefined") throw new Error("PDF renderer not available");
+          const buf=await file.arrayBuffer();
+          const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+          for(let i=1;i<=pdf.numPages;i++){
+            const page=await pdf.getPage(i);
+            const vp0=page.getViewport({scale:1});
+            const vp=page.getViewport({scale:Math.min(2, 816/vp0.width)});
+            const canvas=document.createElement("canvas");
+            canvas.width=vp.width;canvas.height=vp.height;
+            await page.render({canvasContext:canvas.getContext("2d")!,viewport:vp}).promise;
+            pages.push(canvas.toDataURL("image/jpeg",0.92));
+          }
         }
+
+        const pagesHtml=pages.map(src=>
+          `<div style="margin:0;line-height:0;"><img src="${src}" style="width:100%;height:auto;display:block;cursor:pointer;"/></div>`
+        ).join("");
         const newTitle=file.name.replace(/\.pdf$/i,"");
-        const{data,error}=await supabase.from("user_documents").insert({user_id:profile?.id,title:newTitle,content:pagesHtml}).select("*").single();
+        const{data,error}=await supabase.from("user_documents")
+          .insert({user_id:profile?.id,title:newTitle,content:pagesHtml}).select("*").single();
         if(error)throw error;
-        await loadDocs();selectDoc(data as Doc);toast.success(`"${newTitle}" imported (${totalPages} pages)`);
-      }catch(err:any){toast.error(`Failed: "${file.name}" — ${err?.message||"Unknown error"}`);}
+        toast.success(`"${newTitle}" imported (${pages.length} page${pages.length>1?"s":""})`,{id:"import"});
+        await loadDocs();selectDoc(data as Doc);
+      }catch(err:any){
+        toast.error(`Failed: "${file.name}" — ${err?.message||"Unknown error"}`,{id:"import"});
+      }
     }
     setImporting(false);
   };
