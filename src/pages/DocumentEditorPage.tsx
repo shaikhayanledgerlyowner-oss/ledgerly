@@ -27,8 +27,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { renderAsync } from "docx-preview";
 
-declare const mammoth: any;
 // PDF import needs pdf.js loaded globally — add to index.html if not already there:
 //   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 //   <script>pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -644,43 +644,39 @@ export default function DocumentEditorPage(){
     });e.target.value="";
   };
 
-  /* ── Word import — pure client-side via mammoth.js (no backend needed).
-     Produces one flowing, fully-editable page (tables/images/headings/lists
-     preserved). True automatic re-pagination the way Word paginates a long
-     document is a much bigger feature — say if you want that added next;
-     for now long documents will scroll within one continuous page, same as
-     Google Docs does for imported HTML. ── */
+  /* ── Word import — client-side via docx-preview, which renders the docx's
+     actual OOXML formatting (fonts, sizes, colors, real page layout, tables,
+     images) straight into inline CSS — this is what makes it look like the
+     real document instead of the stripped-down plain text mammoth.js used to
+     produce. Each source page becomes its own sized page section, exactly as
+     docx-preview lays it out, so multi-page documents keep their formatting
+     all the way through instead of losing it after the first heading. ── */
   const handleWordUpload=async(e:React.ChangeEvent<HTMLInputElement>)=>{
     const files=Array.from(e.target.files||[]);if(!files.length)return;e.target.value="";
-    if(typeof mammoth==="undefined"){toast.error("Word converter not loaded — refresh the page and try again.");return;}
     setImporting(true);
     for(const file of files){
+      const stage=document.createElement("div");
+      stage.style.cssText="position:fixed;left:-99999px;top:0;";
+      document.body.appendChild(stage);
       try{
         const buf=await file.arrayBuffer();
-        const result=await mammoth.convertToHtml({arrayBuffer:buf},{styleMap:[
-          "p[style-name='Heading 1'] => h1:fresh",
-          "p[style-name='Heading 2'] => h2:fresh",
-          "p[style-name='Heading 3'] => h3:fresh",
-        ]});
-        const dom=new DOMParser().parseFromString(result.value,"text/html");
-        dom.querySelectorAll("table").forEach(t=>{(t as HTMLElement).style.cssText="border-collapse:collapse;width:100%;margin:8px 0;table-layout:fixed;";});
-        dom.querySelectorAll("td,th").forEach(c=>{(c as HTMLElement).setAttribute("style",cellStyleFor((c as HTMLElement).tagName==="TH"));});
-        dom.querySelectorAll("img").forEach(img=>{(img as HTMLElement).style.cssText="max-width:100%;height:auto;display:block;margin:8px 0;cursor:pointer;";});
 
-        // Shrink any oversized single-line "logo" heading so it fits the
-        // page in one line instead of breaking into a multi-line mess —
-        // has to happen in a real, attached, correctly-sized DOM so the
-        // width measurements are accurate.
-        const contentWidth = PAGE_WIDTH - 192; // page width minus 96px margins each side
-        const measureBox = document.createElement("div");
-        measureBox.style.cssText = `position:fixed;left:-99999px;top:0;width:${contentWidth}px;font-family:${fontFamily};font-size:11pt;line-height:1.15;`;
-        measureBox.innerHTML = dom.body.innerHTML;
-        document.body.appendChild(measureBox);
-        fitOversizedText(measureBox, contentWidth);
-        const fixedHtml = measureBox.innerHTML;
-        document.body.removeChild(measureBox);
+        await renderAsync(buf,stage,stage,{
+          className:"wimp",
+          inWrapper:true,
+          breakPages:true,
+          ignoreLastRenderedPageBreak:false,
+          experimental:true,
+          useBase64URL:true, // embed images/fonts as data URLs so they still work after being saved & reloaded from Supabase
+        });
 
-        const pageHtml=`<div class="doc-page doc-page-text">${fixedHtml}</div>`;
+        // Keep docx-preview's own markup + generated <style> tag fully intact
+        // (moving/renaming elements would break its scoped CSS selectors) —
+        // just wrap the whole rendered result as one page block, consistent
+        // with how PDF imports are wrapped.
+        const importedHtml=stage.innerHTML;
+        const pageHtml=`<div class="doc-page doc-page-docximport">${importedHtml}</div>`;
+
         const newTitle=file.name.replace(/\.docx?$/i,"");
         const{data,error}=await supabase.from("user_documents").insert({user_id:profile?.id,title:newTitle,content:pageHtml}).select("*").single();
         if(error)throw error;
@@ -688,6 +684,8 @@ export default function DocumentEditorPage(){
         await loadDocs();selectDoc(data as Doc);
       }catch(err:any){
         toast.error(`Failed: "${file.name}" — ${err?.message||"Unknown error"}`);
+      }finally{
+        document.body.removeChild(stage);
       }
     }
     setImporting(false);
@@ -736,6 +734,7 @@ export default function DocumentEditorPage(){
     .doc-page-text{min-height:${PAGE_MIN_HEIGHT}px;padding:96px;font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.15;color:#000;}
     .doc-page-image{padding:0;line-height:0;}
     .doc-page-image img{width:100%;height:auto;display:block;}
+    .doc-page-docximport{width:auto;background:transparent;box-shadow:none;padding:0;min-height:0;}
     h1{font-size:20pt;font-weight:700;margin:.3em 0;}h2{font-size:16pt;font-weight:700;margin:.3em 0;}h3{font-size:13pt;font-weight:600;margin:.3em 0;}
     table{border-collapse:collapse;width:100%;margin:6px 0;}td,th{border:1px solid #999;padding:5px 8px;vertical-align:top;}th{background:#f0f0f0;font-weight:600;}
     ul{list-style:disc;padding-left:1.5em;}ol{list-style:decimal;padding-left:1.5em;}
@@ -932,6 +931,7 @@ export default function DocumentEditorPage(){
               .doc-page-text:empty:before{content:"Start typing here…";color:#9ca3af;pointer-events:none;}
               .doc-page-image{padding:0;line-height:0;}
               .doc-page-image img{width:100%;height:auto;display:block;cursor:pointer;}
+              .doc-page-docximport{width:auto;background:transparent;box-shadow:none;padding:0;min-height:0;}
               #ld-ed h1{font-size:20pt;font-weight:700;margin:.3em 0;}
               #ld-ed h2{font-size:16pt;font-weight:700;margin:.3em 0;}
               #ld-ed h3{font-size:13pt;font-weight:600;margin:.3em 0;}
