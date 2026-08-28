@@ -28,12 +28,59 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { renderAsync } from "docx-preview";
+import JSZip from "jszip";
 
-// PDF import needs pdf.js loaded globally — add to index.html if not already there:
-//   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-//   <script>pdfjsLib.GlobalWorkerOptions.workerSrc =
-//     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
-declare const pdfjsLib: any;
+const WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+/* ── Fixes a real docx-preview limitation: Word documents with multiple
+   sections (e.g. one section per bill/page) usually only store an explicit
+   headerReference/footerReference on the FIRST section that uses a given
+   header — later sections that are "linked to previous" simply omit the
+   reference, and Word itself knows to reuse the previous section's header.
+   docx-preview does NOT implement that inheritance (its renderHeaderFooter
+   bails out immediately if the current section has no refs), so every
+   section after the first one renders with a blank header/footer.
+   This walks the sections in document order and copies forward the last
+   seen header/footer reference into any section that's missing one —
+   the same rule Word itself applies — before handing the file to
+   docx-preview, so headers/footers appear correctly on every page. ── */
+async function normalizeSectionHeaders(buf: ArrayBuffer): Promise<ArrayBuffer> {
+  try {
+    const zip = await JSZip.loadAsync(buf);
+    const path = "word/document.xml";
+    const file = zip.file(path);
+    if (!file) return buf;
+
+    let xmlText = await file.async("string");
+    if (xmlText.charCodeAt(0) === 0xFEFF) xmlText = xmlText.slice(1); // strip BOM
+
+    const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+    if (doc.getElementsByTagName("parsererror").length) return buf;
+
+    const sectPrs = Array.from(doc.getElementsByTagNameNS(WORD_NS, "sectPr"));
+    let lastHeaderRefs: Element[] = [];
+    let lastFooterRefs: Element[] = [];
+
+    for (const sectPr of sectPrs) {
+      const headerRefs = Array.from(sectPr.getElementsByTagNameNS(WORD_NS, "headerReference"));
+      const footerRefs = Array.from(sectPr.getElementsByTagNameNS(WORD_NS, "footerReference"));
+
+      if (headerRefs.length > 0) lastHeaderRefs = headerRefs;
+      else if (lastHeaderRefs.length > 0) lastHeaderRefs.forEach(n => sectPr.insertBefore(n.cloneNode(true), sectPr.firstChild));
+
+      if (footerRefs.length > 0) lastFooterRefs = footerRefs;
+      else if (lastFooterRefs.length > 0) lastFooterRefs.forEach(n => sectPr.insertBefore(n.cloneNode(true), sectPr.firstChild));
+    }
+
+    const newXml = new XMLSerializer().serializeToString(doc);
+    zip.file(path, newXml);
+    return await zip.generateAsync({ type: "arraybuffer" });
+  } catch {
+    // If anything about this best-effort patch fails, fall back to the
+    // original file rather than blocking the import entirely.
+    return buf;
+  }
+}
 
 interface Doc { id: string; title: string; content: string; updated_at: string; }
 
@@ -309,7 +356,6 @@ export default function DocumentEditorPage(){
   const {profile}=useAuth();
   const editorRef=useRef<HTMLDivElement>(null);
   const wordRef=useRef<HTMLInputElement>(null);
-  const pdfRef=useRef<HTMLInputElement>(null);
   const imgRef=useRef<HTMLInputElement>(null);
   const saveTimer=useRef<NodeJS.Timeout|null>(null);
   const savedRange=useRef<Range|null>(null);
@@ -659,7 +705,8 @@ export default function DocumentEditorPage(){
       stage.style.cssText="position:fixed;left:-99999px;top:0;";
       document.body.appendChild(stage);
       try{
-        const buf=await file.arrayBuffer();
+        const rawBuf=await file.arrayBuffer();
+        const buf=await normalizeSectionHeaders(rawBuf);
 
         await renderAsync(buf,stage,stage,{
           className:"wimp",
@@ -691,42 +738,13 @@ export default function DocumentEditorPage(){
     setImporting(false);
   };
 
-  /* ── PDF import — renders every page through pdf.js's own renderer, then
-     drops each page in as its OWN full-bleed page (no padding squeezing
-     it down) at the same width as every other page in the app, so it
-     genuinely looks like separate A4/Letter sheets — pixel-identical to
-     the source PDF, because it IS the rendered PDF page. Trade-off: page
-     content is an image, not editable text (see note in handleWordUpload
-     if you want an editable-text import path added too). ── */
-  const handlePdfUpload=async(e:React.ChangeEvent<HTMLInputElement>)=>{
-    const files=Array.from(e.target.files||[]);if(!files.length)return;e.target.value="";
-    if(typeof pdfjsLib==="undefined"){toast.error("PDF renderer not loaded — refresh the page and try again.");return;}
-    setImporting(true);
-    for(const file of files){
-      try{
-        const buf=await file.arrayBuffer();
-        const pdf=await pdfjsLib.getDocument({data:buf}).promise;
-        let pagesHtml="";
-        for(let i=1;i<=pdf.numPages;i++){
-          const page=await pdf.getPage(i);
-          const vp=page.getViewport({scale:2});
-          const canvas=document.createElement("canvas");
-          canvas.width=vp.width;canvas.height=vp.height;
-          await page.render({canvasContext:canvas.getContext("2d")!,viewport:vp}).promise;
-          const dataUrl=canvas.toDataURL("image/jpeg",0.95);
-          pagesHtml+=`<div class="doc-page doc-page-image"><img src="${dataUrl}"/></div>`;
-        }
-        const newTitle=file.name.replace(/\.pdf$/i,"");
-        const{data,error}=await supabase.from("user_documents").insert({user_id:profile?.id,title:newTitle,content:pagesHtml}).select("*").single();
-        if(error)throw error;
-        toast.success(`"${newTitle}" imported (${pdf.numPages} page${pdf.numPages>1?"s":""})`);
-        await loadDocs();selectDoc(data as Doc);
-      }catch(err:any){
-        toast.error(`Failed: "${file.name}" — ${err?.message||"Unknown error"}`);
-      }
-    }
-    setImporting(false);
-  };
+  /* PDF import was removed on purpose: rendering a PDF page-by-page only
+     produces flat images, which can't be edited afterwards — that defeated
+     the point of a document editor. Word import (above) is now the only
+     import path; it produces real, fully editable content. Exporting your
+     finished document AS a PDF still works fine via the Export menu
+     (printDoc / "Save as PDF (Print)" below) — that's unrelated to import
+     and untouched. */
 
   const exportCSS=`
     body{background:#e8eaed;margin:0;padding:32px 0;display:flex;flex-direction:column;align-items:center;gap:24px;}
@@ -734,13 +752,24 @@ export default function DocumentEditorPage(){
     .doc-page-text{min-height:${PAGE_MIN_HEIGHT}px;padding:96px;font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.15;color:#000;}
     .doc-page-image{padding:0;line-height:0;}
     .doc-page-image img{width:100%;height:auto;display:block;}
-    .doc-page-docximport{width:auto;background:transparent;box-shadow:none;padding:0;min-height:0;}
-    h1{font-size:20pt;font-weight:700;margin:.3em 0;}h2{font-size:16pt;font-weight:700;margin:.3em 0;}h3{font-size:13pt;font-weight:600;margin:.3em 0;}
-    table{border-collapse:collapse;width:100%;margin:6px 0;}td,th{border:1px solid #999;padding:5px 8px;vertical-align:top;}th{background:#f0f0f0;font-weight:600;}
-    ul{list-style:disc;padding-left:1.5em;}ol{list-style:decimal;padding-left:1.5em;}
+    .doc-page-docximport{width:auto;background:transparent;box-shadow:none;padding:0;min-height:0;overflow:visible;}
+    /* Generic tag styling only applies inside .doc-page-text (your own
+       typed pages). Imported Word documents (.doc-page-docximport) keep
+       docx-preview's own <style> in charge of headers/footers/tables so
+       exported output still matches the real Word file. */
+    .doc-page-text h1{font-size:20pt;font-weight:700;margin:.3em 0;}
+    .doc-page-text h2{font-size:16pt;font-weight:700;margin:.3em 0;}
+    .doc-page-text h3{font-size:13pt;font-weight:600;margin:.3em 0;}
+    .doc-page-text table{border-collapse:collapse;width:100%;margin:6px 0;}
+    .doc-page-text td,.doc-page-text th{border:1px solid #999;padding:5px 8px;vertical-align:top;}
+    .doc-page-text th{background:#f0f0f0;font-weight:600;}
+    .doc-page-text ul{list-style:disc;padding-left:1.5em;}
+    .doc-page-text ol{list-style:decimal;padding-left:1.5em;}
     @media print{
       body{background:#fff;padding:0;gap:0;}
       .doc-page{box-shadow:none;page-break-after:always;}
+      .doc-page-docximport{page-break-after:auto;}
+      .doc-page-docximport section{page-break-after:always;}
       .doc-page-image img{page-break-inside:avoid;}
     }
   `;
@@ -932,21 +961,33 @@ export default function DocumentEditorPage(){
               .doc-page-image{padding:0;line-height:0;}
               .doc-page-image img{width:100%;height:auto;display:block;cursor:pointer;}
               .doc-page-docximport{width:auto;background:transparent;box-shadow:none;padding:0;min-height:0;}
-              #ld-ed h1{font-size:20pt;font-weight:700;margin:.3em 0;}
-              #ld-ed h2{font-size:16pt;font-weight:700;margin:.3em 0;}
-              #ld-ed h3{font-size:13pt;font-weight:600;margin:.3em 0;}
-              #ld-ed blockquote{border-left:3px solid #ccc;padding:3px 12px;color:#555;margin:4px 0;}
-              #ld-ed pre{background:#f5f5f5;padding:10px;border-radius:4px;font-family:monospace;font-size:.85em;overflow-x:auto;}
-              #ld-ed ul{list-style:disc !important;padding-left:1.5em !important;margin:3px 0;}
-              #ld-ed ol{list-style:decimal !important;padding-left:1.5em !important;margin:3px 0;}
-              #ld-ed li{display:list-item !important;}
-              #ld-ed table{border-collapse:collapse;width:100%;margin:6px 0;}
-              #ld-ed td,#ld-ed th{border:1px solid #999;padding:5px 8px;vertical-align:top;min-width:30px;word-break:break-word;}
-              #ld-ed th{background:#f0f0f0;font-weight:600;}
+              /* IMPORTANT: these generic element rules are scoped to
+                 .doc-page-text (your own typed/inserted content) ONLY.
+                 Imported Word documents live in .doc-page-docximport and
+                 must keep docx-preview's own generated <style> in full
+                 control — that's what makes headers, footers, table
+                 borders/shading, spacing, and page layout match the real
+                 Word file instead of being overwritten by app defaults. */
+              #ld-ed .doc-page-text h1{font-size:20pt;font-weight:700;margin:.3em 0;}
+              #ld-ed .doc-page-text h2{font-size:16pt;font-weight:700;margin:.3em 0;}
+              #ld-ed .doc-page-text h3{font-size:13pt;font-weight:600;margin:.3em 0;}
+              #ld-ed .doc-page-text blockquote{border-left:3px solid #ccc;padding:3px 12px;color:#555;margin:4px 0;}
+              #ld-ed .doc-page-text pre{background:#f5f5f5;padding:10px;border-radius:4px;font-family:monospace;font-size:.85em;overflow-x:auto;}
+              #ld-ed .doc-page-text ul{list-style:disc !important;padding-left:1.5em !important;margin:3px 0;}
+              #ld-ed .doc-page-text ol{list-style:decimal !important;padding-left:1.5em !important;margin:3px 0;}
+              #ld-ed .doc-page-text li{display:list-item !important;}
+              #ld-ed .doc-page-text table{border-collapse:collapse;width:100%;margin:6px 0;}
+              #ld-ed .doc-page-text td,#ld-ed .doc-page-text th{border:1px solid #999;padding:5px 8px;vertical-align:top;min-width:30px;word-break:break-word;}
+              #ld-ed .doc-page-text th{background:#f0f0f0;font-weight:600;}
               #ld-ed .doc-page-text img{max-width:100%;height:auto;cursor:pointer;display:block;margin:6px 0;}
               #ld-ed .doc-page-text img:hover{outline:2px solid #4a86e8;outline-offset:2px;}
-              #ld-ed a{color:#1155cc;text-decoration:underline;}
+              #ld-ed .doc-page-text a{color:#1155cc;text-decoration:underline;}
               #ld-ed .doc-page-text p{margin:0 0 1px 0;min-height:1.15em;}
+              /* Imported Word pages: let docx-preview's own page look
+                 (white page boxes, shadow, header/footer positioning,
+                 inter-page gaps) render untouched. */
+              #ld-ed .doc-page-docximport{overflow:visible;display:block;}
+              #ld-ed .doc-page-docximport section{margin-bottom:24px;}
             `}</style>
 
             <div style={{transform:`scale(${pageZoom/100})`,transformOrigin:"top center",transition:"transform 0.1s",display:"flex",justifyContent:"center"}}>
