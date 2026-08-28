@@ -860,6 +860,63 @@ export default function DocumentEditorPage() {
     toast.success("Table inserted!");
   };
 
+  /* ── Table row/column "+" controls ──
+     Finds which <table> the cursor/click is currently inside, then adds
+     one more row (copying the last row's cell count/styling) or one more
+     column (copying the last column's cell styling into every row) —
+     same behaviour as Word/Google Docs' hover "+" controls. */
+  const findTableAt = (node: Node | null): HTMLTableElement | null => {
+    let el: Node | null = node;
+    while (el) {
+      if (el instanceof HTMLTableElement) return el;
+      el = el.parentNode;
+    }
+    return null;
+  };
+
+  const addTableRow = (table: HTMLTableElement) => {
+    const rows = Array.from(table.rows);
+    if (rows.length === 0) return;
+    const lastRow = rows[rows.length - 1];
+    const newRow = document.createElement("tr");
+    Array.from(lastRow.cells).forEach(cell => {
+      const isTh = cell.tagName === "TH";
+      const newCell = document.createElement(isTh ? "th" : "td");
+      newCell.setAttribute("style", cell.getAttribute("style") || "");
+      if (isTh) { newCell.style.background = "#ffffff"; newCell.style.fontWeight = "normal"; }
+      newCell.innerHTML = "&nbsp;";
+      newRow.appendChild(newCell);
+    });
+    lastRow.after(newRow);
+    triggerSave();
+  };
+
+  const addTableColumn = (table: HTMLTableElement) => {
+    const rows = Array.from(table.rows);
+    if (rows.length === 0) return;
+    rows.forEach(row => {
+      const lastCell = row.cells[row.cells.length - 1];
+      if (!lastCell) return;
+      const isTh = lastCell.tagName === "TH";
+      const newCell = document.createElement(isTh ? "th" : "td");
+      newCell.setAttribute("style", lastCell.getAttribute("style") || "");
+      newCell.innerHTML = "&nbsp;";
+      lastCell.after(newCell);
+    });
+    triggerSave();
+  };
+
+  /* Tracks which table the cursor is currently in, so the floating +
+     buttons know which table to grow. Updated on every click/keyup
+     inside the editor. */
+  const [activeTable, setActiveTable] = useState<HTMLTableElement | null>(null);
+  const updateActiveTable = () => {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) { setActiveTable(null); return; }
+    const node = sel.getRangeAt(0).startContainer;
+    setActiveTable(findTableAt(node));
+  };
+
   /* ── Insert link ── */
   const insertLink = () => {
     const u = prompt("Enter URL:");
