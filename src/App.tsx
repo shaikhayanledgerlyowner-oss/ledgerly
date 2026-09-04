@@ -43,7 +43,7 @@ const App = () => (
             >
               <Route index element={<DashboardHome />} />
               <Route path="analytics" element={<AnalyticsPage />} />
-              <Route path="documents" element={<DocumentEditorPage />} />
+              <Route path="document-editor" element={<DocumentEditorPage />} />
               <Route path="easycount" element={<EasyCountPage />} />
               <Route path="invoices" element={<InvoicesPage />} />
               <Route path="pricing" element={<PricingPage />} />
