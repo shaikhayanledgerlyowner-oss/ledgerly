@@ -1,797 +1,789 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  FileText, Plus, Search, ArrowUpDown, Pencil, Copy, Trash2, X,
-  ChevronRight, Upload, FileUp,
+  Bold, Italic, Underline, Strikethrough,
+  AlignLeft, AlignCenter, AlignRight, AlignJustify,
+  List, ListOrdered, Undo, Redo, Save, FileText,
+  Plus, Trash2, Type, Palette, Link,
+  ChevronDown, Download, Table, Image as ImageIcon,
+  Upload, ChevronRight, X, Search, ArrowUpDown,
+  Copy, Pencil, ZoomIn, ZoomOut,
+  Square, Circle, ArrowUpRight, Highlighter, Eraser,
+  RotateCw, RotateCcw, FlipHorizontal, FlipVertical,
 } from "lucide-react";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { renderAsync } from "docx-preview";
+import JSZip from "jszip";
 
-declare const mammoth: any;
-declare const pdfjsLib: any;
+/* ── Fix Word multi-section header/footer inheritance ──
+   Word reuses the previous section's header when a section has no explicit
+   reference ("same as previous"). docx-preview does NOT implement this,
+   so pages 2+ show a blank header. We patch the XML before rendering. */
+const WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
-interface Doc {
-  id: string;
-  title: string;
-  content: string;
-  updated_at: string;
-}
-
-const FONTS = ["Aptos","Arial","Calibri","Cambria","Courier New","Georgia","Helvetica","Segoe UI","Times New Roman","Trebuchet MS","Verdana"];
-const SIZES = [8,9,10,11,12,14,16,18,20,24,28,32,36,48,72];
-const COLORS = ["#000000","#404040","#7f7f7f","#bfbfbf","#ffffff","#c00000","#ff0000","#ffc000","#ffff00","#92d050","#00b050","#00b0f0","#0070c0","#002060","#7030a0"];
-const HIGHLIGHTS = ["#ffff00","#00ff00","#00ffff","#ff00ff","#ff9999","#c0c0c0","transparent"];
-
-const TABS = ["File","Home","Insert","Layout","Review","View"] as const;
-type Tab = typeof TABS[number];
-
-const PAGE_W_PX = 816;   // 8.5in @ 96dpi
-const PAGE_H_PX = 1056;  // 11in  @ 96dpi
-const PAGE_PAD_PX = 96;  // 1in margins
-
-/* ═════════ small UI atoms — dark, Word-ribbon styled ═════════ */
-function RBtn({ children, title, onClick, active, disabled, wide }: {
-  children: React.ReactNode; title: string; onClick: () => void;
-  active?: boolean; disabled?: boolean; wide?: boolean;
-}) {
-  return (
-    <button type="button" title={title} aria-pressed={active} disabled={disabled}
-      onMouseDown={e => e.preventDefault()}
-      onClick={onClick}
-      className={cn(
-        "flex h-8 items-center justify-center gap-1 rounded text-sm transition-colors disabled:opacity-40 border",
-        wide ? "px-2" : "w-8",
-        active ? "border-white/30 bg-white/15 text-white" : "border-transparent text-white/70 hover:border-white/20 hover:bg-white/10 hover:text-white"
-      )}>
-      {children}
-    </button>
-  );
-}
-
-function RGroup({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex shrink-0 flex-col items-center gap-1 border-r border-white/10 px-2 py-1 last:border-r-0">
-      <div className="flex flex-wrap items-center gap-0.5">{children}</div>
-      <span className="text-[10px] uppercase tracking-wide text-white/40">{label}</span>
-    </div>
-  );
-}
-
-function RPopover({ title, label, children }: {
-  title: string; label: React.ReactNode; children: (close: () => void) => React.ReactNode;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, [open]);
-  return (
-    <div ref={ref} className="relative">
-      <RBtn title={title} wide onClick={() => setOpen(o => !o)} active={open}>
-        {label}<span className="text-[9px] leading-none">▾</span>
-      </RBtn>
-      {open && (
-        <div className="absolute left-0 top-9 z-50 min-w-40 rounded-md border border-white/10 bg-[#252525] p-2 shadow-xl">
-          {children(() => setOpen(false))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ═════════ Insert Table modal ═════════ */
-function InsertTableModal({ onInsert, onClose }: { onInsert: (r: number, c: number) => void; onClose: () => void }) {
-  const [rows, setRows] = useState(3);
-  const [cols, setCols] = useState(3);
-  return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60" onClick={onClose}>
-      <div className="w-80 rounded-lg border border-white/10 bg-[#252525] p-4 text-white" onClick={e => e.stopPropagation()}>
-        <h3 className="mb-3 text-sm font-semibold">Insert Table</h3>
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <label className="w-20 text-sm text-white/70">Rows:</label>
-            <Input type="number" min={1} max={30} value={rows} onChange={e => setRows(Number(e.target.value))} className="w-24 bg-white/5 text-white" />
-          </div>
-          <div className="flex items-center gap-3">
-            <label className="w-20 text-sm text-white/70">Columns:</label>
-            <Input type="number" min={1} max={10} value={cols} onChange={e => setCols(Number(e.target.value))} className="w-24 bg-white/5 text-white" />
-          </div>
-        </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <button onClick={onClose} className="rounded border border-white/20 px-3 py-1.5 text-sm hover:bg-white/10">Cancel</button>
-          <button onClick={() => onInsert(rows, cols)} className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium hover:bg-blue-500">Insert</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ═════════ Word text-box fragment merge + positioning strip (docx import fidelity) ═════════ */
-function getMaxFontSizePx(el: HTMLElement): number {
-  let max = 0;
-  const consider = (e: HTMLElement) => {
-    const fs = e.style?.fontSize;
-    if (fs) {
-      const m = fs.match(/([\d.]+)\s*(px|pt)/);
-      if (m) { let v = parseFloat(m[1]); if (m[2] === "pt") v *= 1.333; if (v > max) max = v; }
+async function normalizeSectionHeaders(buf: ArrayBuffer): Promise<ArrayBuffer> {
+  try {
+    const zip = await JSZip.loadAsync(buf);
+    const path = "word/document.xml";
+    const file = zip.file(path);
+    if (!file) return buf;
+    let xmlText = await file.async("string");
+    if (xmlText.charCodeAt(0) === 0xFEFF) xmlText = xmlText.slice(1);
+    const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+    if (doc.getElementsByTagName("parsererror").length) return buf;
+    const sectPrs = Array.from(doc.getElementsByTagNameNS(WORD_NS, "sectPr"));
+    let lastHeaderRefs: Element[] = [];
+    let lastFooterRefs: Element[] = [];
+    for (const sectPr of sectPrs) {
+      const headerRefs = Array.from(sectPr.getElementsByTagNameNS(WORD_NS, "headerReference"));
+      const footerRefs = Array.from(sectPr.getElementsByTagNameNS(WORD_NS, "footerReference"));
+      if (headerRefs.length > 0) lastHeaderRefs = headerRefs;
+      else if (lastHeaderRefs.length > 0)
+        lastHeaderRefs.forEach(n => sectPr.insertBefore(n.cloneNode(true), sectPr.firstChild));
+      if (footerRefs.length > 0) lastFooterRefs = footerRefs;
+      else if (lastFooterRefs.length > 0)
+        lastFooterRefs.forEach(n => sectPr.insertBefore(n.cloneNode(true), sectPr.firstChild));
     }
-  };
-  consider(el);
-  el.querySelectorAll<HTMLElement>("*").forEach(consider);
-  return max;
-}
-
-function mergeLogoFragments(root: HTMLElement) {
-  const paragraphs = Array.from(root.querySelectorAll("p"));
-  let i = 0;
-  while (i < paragraphs.length) {
-    const group: HTMLElement[] = [];
-    let j = i;
-    while (j < paragraphs.length) {
-      const p = paragraphs[j];
-      if (!p.isConnected) { j++; continue; }
-      const text = p.textContent?.trim() || "";
-      const fontSize = getMaxFontSizePx(p);
-      const isLogoLike = text.length > 0 && text.length <= 25 && fontSize >= 18;
-      const isConsecutive = group.length === 0 ||
-        (p.previousElementSibling === group[group.length - 1] && p.parentElement === group[group.length - 1].parentElement);
-      if (isLogoLike && isConsecutive) { group.push(p); j++; } else break;
-    }
-    if (group.length >= 2) {
-      const wrapper = document.createElement("p");
-      wrapper.style.cssText = "display:flex;align-items:baseline;flex-wrap:wrap;margin:.2em 0;";
-      group.forEach(p => {
-        const span = document.createElement("span");
-        span.style.cssText = "display:inline-block;white-space:nowrap;";
-        span.innerHTML = p.innerHTML;
-        wrapper.appendChild(span);
-      });
-      group[0].parentElement?.insertBefore(wrapper, group[0]);
-      group.forEach(p => p.remove());
-    }
-    i = j > i ? j : i + 1;
+    const newXml = new XMLSerializer().serializeToString(doc);
+    zip.file(path, newXml);
+    return await zip.generateAsync({ type: "arraybuffer" });
+  } catch {
+    return buf;
   }
 }
 
-function cleanImportedDom(dom: Document) {
-  dom.querySelectorAll<HTMLElement>("[style]").forEach(el => {
-    const s = el.style;
-    if (s.position === "absolute" || s.position === "fixed") s.position = "static";
-    if (s.top) s.top = "";
-    if (s.left) s.left = "";
-    if (s.right) s.right = "";
-    if (s.bottom) s.bottom = "";
-    if (s.marginTop && parseFloat(s.marginTop) < 0) s.marginTop = "0";
-    if (s.marginLeft && parseFloat(s.marginLeft) < 0) s.marginLeft = "0";
-    if (s.textIndent && parseFloat(s.textIndent) < 0) s.textIndent = "0";
-    if (s.transform) s.transform = "";
-  });
-  mergeLogoFragments(dom.body);
-  dom.querySelectorAll("table").forEach(t => { (t as HTMLElement).style.cssText = "border-collapse:collapse;width:100%;margin:8px 0;"; });
-  dom.querySelectorAll("td,th").forEach(c => { (c as HTMLElement).style.cssText += ";border:1.5px solid #9ca3af;padding:6px 10px;vertical-align:top;word-break:break-word;"; });
-  dom.querySelectorAll("th").forEach(c => { (c as HTMLElement).style.background = "#f3f4f6"; (c as HTMLElement).style.fontWeight = "600"; });
-  dom.querySelectorAll("img").forEach(img => { (img as HTMLElement).style.cssText = "max-width:100%;height:auto;display:block;margin:8px 0;cursor:pointer;"; });
+interface Doc { id: string; title: string; content: string; updated_at: string; }
+
+const FONT_SIZES = ["8","9","10","11","12","14","16","18","20","22","24","26","28","36","48","72"];
+const FONT_FAMILIES = ["Arial","Times New Roman","Calibri","Georgia","Verdana","Courier New","Trebuchet MS","Tahoma"];
+const COLORS = [
+  "#000000","#1f1f1f","#434343","#666666","#999999","#b7b7b7","#cccccc","#ffffff",
+  "#ff0000","#ff4500","#ff9900","#ffff00","#00ff00","#00ffff","#4a86e8","#0000ff","#9900ff","#ff00ff",
+  "#ea9999","#f9cb9c","#ffe599","#b6d7a8","#a2c4c9","#9fc5e8","#b4a7d6","#d5a6bd",
+  "#cc0000","#e69138","#f1c232","#6aa84f","#45818e","#3d85c6","#674ea7","#a64d79",
+];
+
+const PAGE_WIDTH = 816;
+const PAGE_MIN_HEIGHT = 1056;
+
+function drawArrow(ctx:CanvasRenderingContext2D,x1:number,y1:number,x2:number,y2:number,w:number,color:string){
+  const hl=Math.max(12,w*5),angle=Math.atan2(y2-y1,x2-x1);
+  ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=w;ctx.lineCap="round";
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(x2,y2);
+  ctx.lineTo(x2-hl*Math.cos(angle-Math.PI/6),y2-hl*Math.sin(angle-Math.PI/6));
+  ctx.lineTo(x2-hl*Math.cos(angle+Math.PI/6),y2-hl*Math.sin(angle+Math.PI/6));
+  ctx.closePath();ctx.fill();
 }
 
-/* ═════════ Pagination display ═════════ */
-function usePageCount(editorRef: React.RefObject<HTMLDivElement>, contentVersion: number) {
-  const [pageCount, setPageCount] = useState(1);
-  useEffect(() => {
-    const el = editorRef.current;
-    if (!el) return;
-    const usableH = PAGE_H_PX - PAGE_PAD_PX * 2;
-    const total = el.scrollHeight;
-    setPageCount(Math.max(1, Math.ceil(total / usableH)));
-  }, [contentVersion, editorRef]);
-  return pageCount;
+const cellStyleFor = (isHead: boolean) =>
+  `border:1px solid #999;padding:5px 8px;min-width:40px;word-break:break-word;vertical-align:top;${isHead?"background:#f0f0f0;font-weight:600;":"background:#ffffff;"}`;
+
+function makeTableHtml(rows:number, cols:number): string {
+  let html = `<table style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0;">`;
+  for (let r = 0; r < rows; r++) {
+    html += "<tr>";
+    for (let c = 0; c < cols; c++) {
+      const isHead = r === 0;
+      html += isHead
+        ? `<th style="${cellStyleFor(true)}">Header ${c+1}</th>`
+        : `<td style="${cellStyleFor(false)}">&nbsp;</td>`;
+    }
+    html += "</tr>";
+  }
+  html += "</table>";
+  return html;
 }
 
-/* ════════════════════════════════════════════
-   MAIN EDITOR
-═══════════════════════════════════════════ */
-export default function DocumentEditorPage() {
-  const { profile } = useAuth();
-  const editorRef = useRef<HTMLDivElement>(null);
-  const wordRef = useRef<HTMLInputElement>(null);
-  const pdfRef = useRef<HTMLInputElement>(null);
-  const imgRef = useRef<HTMLInputElement>(null);
-  const saveTimer = useRef<NodeJS.Timeout | null>(null);
+/* ─── Image Editor Modal ─── */
+type ImgTab="adjust"|"transform"|"crop"|"draw";
+type DrawTool="pen"|"highlighter"|"eraser"|"rect"|"circle"|"arrow"|"text";
 
-  const [docs, setDocs] = useState<Doc[]>([]);
-  const [selectedDoc, setSelectedDoc] = useState<Doc | null>(null);
-  const [title, setTitle] = useState("Untitled document");
-  const [saving, setSaving] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [contentVersion, setContentVersion] = useState(0);
+function ImageEditorModal({src,onSave,onDelete,onReplace,onClose}:{
+  src:string;onSave:(d:string)=>void;onDelete:()=>void;onReplace:(f:File)=>void;onClose:()=>void;
+}){
+  const baseRef=useRef<HTMLCanvasElement>(null);
+  const overlayRef=useRef<HTMLCanvasElement>(null);
+  const replaceRef=useRef<HTMLInputElement>(null);
+  const [tab,setTab]=useState<ImgTab>("draw");
+  const [brightness,setBrightness]=useState(100);
+  const [contrast,setContrast]=useState(100);
+  const [saturation,setSaturation]=useState(100);
+  const [blur,setBlur]=useState(0);
+  const [zoom,setZoom]=useState(1);
+  const [tool,setTool]=useState<DrawTool>("pen");
+  const [color,setColor]=useState("#ff0000");
+  const [sw,setSw]=useState(3);
+  const [textInput,setTextInput]=useState("");
+  const [textPos,setTextPos]=useState<{x:number;y:number}|null>(null);
+  const [cropRect,setCropRect]=useState<{x:number;y:number;w:number;h:number}|null>(null);
+  const cropStart=useRef<{x:number;y:number}|null>(null);
+  const [hist,setHist]=useState<{list:string[];idx:number}>({list:[],idx:-1});
+  const [ready,setReady]=useState(false);
+  const drawing=useRef(false);
+  const hadDraw=useRef(false);
+  const startPos=useRef<{x:number;y:number}|null>(null);
+  const lastPos=useRef<{x:number;y:number}|null>(null);
+  const cssFilter=`brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) blur(${blur}px)`;
 
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<Doc | null>(null);
+  const syncSize=()=>{const b=baseRef.current,o=overlayRef.current;if(!b||!o)return;o.width=b.width;o.height=b.height;};
 
-  const [tab, setTab] = useState<Tab>("Home");
-  const [zoom, setZoom] = useState(100);
-  const [showTableModal, setShowTableModal] = useState(false);
-  const [fmt, setFmt] = useState<Record<string, boolean>>({});
-  const [font, setFont] = useState("Aptos");
-  const [size, setSize] = useState(12);
-  const [stats, setStats] = useState({ words: 0, chars: 0 });
-
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [docSearch, setDocSearch] = useState("");
-  const [docSort, setDocSort] = useState<"recent" | "name">("recent");
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  const dragStartX = useRef<number | null>(null);
-
-  const pageCount = usePageCount(editorRef, contentVersion);
-
-  /* ── Load docs ── */
-  const loadDocs = useCallback(async () => {
-    if (!profile) return;
-    const { data } = await supabase.from("user_documents").select("*").eq("user_id", profile.id).order("updated_at", { ascending: false });
-    setDocs((data ?? []) as Doc[]);
-  }, [profile]);
-  useEffect(() => { loadDocs(); }, [loadDocs]);
-
-  const filteredSortedDocs = useMemo(() => {
-    let list = docs;
-    if (docSearch.trim()) { const q = docSearch.trim().toLowerCase(); list = list.filter(d => d.title.toLowerCase().includes(q)); }
-    list = [...list];
-    if (docSort === "name") list.sort((a, b) => a.title.localeCompare(b.title));
-    else list.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
-    return list;
-  }, [docs, docSearch, docSort]);
-
-  /* ── Selection persistence ── */
-  const savedRangeRef = useRef<Range | null>(null);
-  useEffect(() => {
-    const handler = () => {
-      const sel = window.getSelection();
-      if (!sel || sel.rangeCount === 0) return;
-      const range = sel.getRangeAt(0);
-      if (editorRef.current && editorRef.current.contains(range.commonAncestorContainer)) {
-        savedRangeRef.current = range.cloneRange();
-      }
+  useEffect(()=>{
+    const img=new Image();img.crossOrigin="anonymous";
+    img.onload=()=>{
+      const c=baseRef.current!;c.width=img.naturalWidth||800;c.height=img.naturalHeight||600;
+      c.getContext("2d")!.drawImage(img,0,0,c.width,c.height);syncSize();
+      setHist({list:[c.toDataURL()],idx:0});setReady(true);
     };
-    document.addEventListener("selectionchange", handler);
-    return () => document.removeEventListener("selectionchange", handler);
-  }, []);
-  const restoreSelection = (): Range | null => {
-    const editor = editorRef.current;
-    if (!editor) return null;
-    editor.focus();
-    const sel = window.getSelection();
-    if (!sel) return null;
-    if (savedRangeRef.current && editor.contains(savedRangeRef.current.startContainer)) {
-      sel.removeAllRanges(); sel.addRange(savedRangeRef.current); return savedRangeRef.current;
-    }
-    const range = document.createRange();
-    range.selectNodeContents(editor); range.collapse(false);
-    sel.removeAllRanges(); sel.addRange(range);
-    return range;
-  };
+    img.onerror=()=>toast.error("Cannot load image");img.src=src;
+  },[src]);
 
-  const updateStats = useCallback(() => {
-    const el = editorRef.current;
-    if (!el) return;
-    const text = el.innerText.replace(/\u00a0/g, " ");
-    const words = text.trim() ? text.trim().split(/\s+/).length : 0;
-    setStats({ words, chars: text.replace(/\n/g, "").length });
-  }, []);
-
-  const syncFormatState = useCallback(() => {
-    const q = (c: string) => { try { return document.queryCommandState(c); } catch { return false; } };
-    setFmt({
-      bold: q("bold"), italic: q("italic"), underline: q("underline"), strikeThrough: q("strikeThrough"),
-      insertUnorderedList: q("insertUnorderedList"), insertOrderedList: q("insertOrderedList"),
-      justifyLeft: q("justifyLeft"), justifyCenter: q("justifyCenter"), justifyRight: q("justifyRight"), justifyFull: q("justifyFull"),
-    });
-  }, []);
-
-  /* ── Select / new / duplicate / rename doc ── */
-  const selectDoc = (doc: Doc) => {
-    setSelectedDoc(doc); setTitle(doc.title);
-    requestAnimationFrame(() => {
-      if (editorRef.current) { editorRef.current.innerHTML = doc.content || ""; editorRef.current.focus(); }
-      updateStats(); setContentVersion(v => v + 1);
-    });
-  };
-  const createNewDoc = async () => {
-    if (!profile) return;
-    const { data, error } = await supabase.from("user_documents").insert({ user_id: profile.id, title: "Untitled document", content: "<h1>Untitled document</h1><p><br></p>" }).select("*").single();
-    if (error) return toast.error(error.message);
-    toast.success("New document created!"); await loadDocs(); selectDoc(data as Doc);
-  };
-  const duplicateDoc = async (doc: Doc) => {
-    if (!profile) return;
-    const { data, error } = await supabase.from("user_documents").insert({ user_id: profile.id, title: doc.title + " (Copy)", content: doc.content }).select("*").single();
-    if (error) return toast.error(error.message);
-    toast.success("Document duplicated!"); await loadDocs(); selectDoc(data as Doc);
-  };
-  const startRename = (doc: Doc) => { setRenamingId(doc.id); setRenameValue(doc.title); };
-  const commitRename = async (doc: Doc) => {
-    const newTitle = renameValue.trim() || doc.title;
-    setRenamingId(null);
-    if (newTitle === doc.title) return;
-    const { error } = await supabase.from("user_documents").update({ title: newTitle }).eq("id", doc.id);
-    if (error) return toast.error(error.message);
-    setDocs(prev => prev.map(d => d.id === doc.id ? { ...d, title: newTitle } : d));
-    if (selectedDoc?.id === doc.id) setTitle(newTitle);
-  };
-
-  /* ── Save ── */
-  const autoSave = useCallback(async () => {
-    if (!selectedDoc || !profile) return;
-    const content = editorRef.current?.innerHTML || "";
-    const { error } = await supabase.from("user_documents").update({ title, content, updated_at: new Date().toISOString() }).eq("id", selectedDoc.id);
-    if (!error) setDocs(prev => prev.map(d => d.id === selectedDoc.id ? { ...d, title, content } : d));
-  }, [selectedDoc, title, profile]);
-  const handleSaveNow = async () => { setSaving(true); await autoSave(); setSaving(false); toast.success("Saved!"); };
-  const triggerSave = () => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(autoSave, 1200);
-    updateStats(); setContentVersion(v => v + 1);
-  };
-
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
-    await supabase.from("user_documents").delete().eq("id", deleteTarget.id);
-    toast.success("Deleted!"); setDeleteOpen(false); setDeleteTarget(null);
-    if (selectedDoc?.id === deleteTarget.id) { setSelectedDoc(null); if (editorRef.current) editorRef.current.innerHTML = ""; }
-    await loadDocs();
-  };
-
-  /* ── Format commands ── */
-  const exec = (cmd: string, val?: string) => { restoreSelection(); document.execCommand(cmd, false, val); syncFormatState(); triggerSave(); };
-  const insertHTML = (html: string) => { restoreSelection(); document.execCommand("insertHTML", false, html); triggerSave(); };
-  const applyBlock = (tag: string) => { restoreSelection(); document.execCommand("formatBlock", false, `<${tag}>`); syncFormatState(); triggerSave(); };
-  const applyStyleToSelection = (apply: (span: HTMLElement) => void) => {
-    const editor = editorRef.current; if (!editor) return;
-    restoreSelection();
-    const sel = window.getSelection(); if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
-    const range = sel.getRangeAt(0);
-    const span = document.createElement("span"); apply(span);
-    try {
-      span.appendChild(range.extractContents()); range.insertNode(span);
-      sel.removeAllRanges(); const r = document.createRange(); r.selectNodeContents(span); sel.addRange(r);
-    } catch {}
-    triggerSave();
-  };
-
-  const insertTable = (rows: number, cols: number) => {
-    const th = Array.from({ length: cols }, (_, i) => `<th style="border:1.5px solid #9ca3af;padding:6px 10px;background:#f3f4f6;font-weight:600;">Header ${i + 1}</th>`).join("");
-    const body = Array.from({ length: Math.max(0, rows - 1) }, () => `<tr>${Array.from({ length: cols }, () => `<td style="border:1.5px solid #9ca3af;padding:6px 10px;">&nbsp;</td>`).join("")}</tr>`).join("");
-    insertHTML(`<table style="border-collapse:collapse;width:100%;margin:8px 0;"><tbody><tr>${th}</tr>${body}</tbody></table><p><br></p>`);
-    setShowTableModal(false);
-    toast.success("Table inserted!");
-  };
-
-  const insertLink = () => {
-    const url = window.prompt("Link URL", "https://"); if (!url) return;
-    const sel = window.getSelection();
-    if (sel && sel.toString()) exec("createLink", url);
-    else insertHTML(`<a href="${url}">${url}</a>`);
-  };
-
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []); if (!files.length) return;
-    restoreSelection();
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = ev => { insertHTML(`<img src="${ev.target?.result}" style="max-width:100%;height:auto;display:block;margin:8px 0;" />`); };
-      reader.readAsDataURL(file);
-    });
-    e.target.value = "";
-  };
-
-  /* ── Table row/column "+" ── */
-  const findTableAt = (node: Node | null): HTMLTableElement | null => {
-    let el: Node | null = node;
-    while (el) { if (el instanceof HTMLTableElement) return el; el = el.parentNode; }
-    return null;
-  };
-  const [activeTable, setActiveTable] = useState<HTMLTableElement | null>(null);
-  const updateActiveTable = () => {
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) { setActiveTable(null); return; }
-    setActiveTable(findTableAt(sel.getRangeAt(0).startContainer));
-  };
-  const addTableRow = (table: HTMLTableElement) => {
-    const rows = Array.from(table.rows); if (!rows.length) return;
-    const lastRow = rows[rows.length - 1];
-    const newRow = document.createElement("tr");
-    Array.from(lastRow.cells).forEach(cell => {
-      const isTh = cell.tagName === "TH";
-      const newCell = document.createElement(isTh ? "th" : "td");
-      newCell.setAttribute("style", cell.getAttribute("style") || "");
-      if (isTh) { newCell.style.background = "#ffffff"; newCell.style.fontWeight = "normal"; }
-      newCell.innerHTML = "&nbsp;"; newRow.appendChild(newCell);
-    });
-    lastRow.after(newRow); triggerSave();
-  };
-  const addTableColumn = (table: HTMLTableElement) => {
-    Array.from(table.rows).forEach(row => {
-      const lastCell = row.cells[row.cells.length - 1]; if (!lastCell) return;
-      const isTh = lastCell.tagName === "TH";
-      const newCell = document.createElement(isTh ? "th" : "td");
-      newCell.setAttribute("style", lastCell.getAttribute("style") || "");
-      newCell.innerHTML = "&nbsp;"; lastCell.after(newCell);
-    });
-    triggerSave();
-  };
-
-  /* ── Word import ── */
-  const handleWordUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []); if (!files.length) return;
-    e.target.value = "";
-    if (typeof mammoth === "undefined") { toast.error("Word converter not loaded — please refresh the page."); return; }
-
-    setImporting(true);
-    for (const file of files) {
-      try {
-        const buf = await file.arrayBuffer();
-        const result = await mammoth.convertToHtml({ arrayBuffer: buf }, {
-          styleMap: ["p[style-name='Heading 1'] => h1:fresh", "p[style-name='Heading 2'] => h2:fresh", "p[style-name='Heading 3'] => h3:fresh"],
-        });
-        const dom = new DOMParser().parseFromString(result.value, "text/html");
-        cleanImportedDom(dom);
-
-        const imgCount = dom.querySelectorAll("img").length;
-        const textLen = (dom.body.textContent || "").trim().length;
-        if (imgCount >= 5 && textLen < 2000) {
-          toast("This document looks like it has a logo/letterhead built from positioned images — for a pixel-perfect match, export it as PDF from Word and use \"Import PDF\" instead.", { duration: 7000 });
-        }
-
-        const styledHtml = dom.body.innerHTML;
-        const newTitle = file.name.replace(/\.docx?$/i, "");
-        const { data, error } = await supabase.from("user_documents").insert({ user_id: profile?.id, title: newTitle, content: styledHtml }).select("*").single();
-        if (error) throw error;
-        await loadDocs(); selectDoc(data as Doc);
-        toast.success(`"${newTitle}" imported!`);
-      } catch (err: any) {
-        toast.error(`Failed: "${file.name}" — ${err?.message || "Unknown error"}`);
-      }
-    }
-    setImporting(false);
-  };
-
-  /* ── PDF import ── */
-  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []); if (!files.length) return;
-    e.target.value = "";
-    if (typeof pdfjsLib === "undefined") { toast.error("PDF renderer not loaded — please refresh the page."); return; }
-
-    setImporting(true);
-    for (const file of files) {
-      try {
-        const buf = await file.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-        let pagesHtml = "";
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const viewport = page.getViewport({ scale: 2 });
-          const canvas = document.createElement("canvas");
-          canvas.width = viewport.width; canvas.height = viewport.height;
-          const ctx = canvas.getContext("2d")!;
-          await page.render({ canvasContext: ctx, viewport }).promise;
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-          pagesHtml += `<div class="pdf-page" style="page-break-after:always;margin:0 0 16px 0;"><img src="${dataUrl}" style="width:100%;display:block;" /></div>`;
-        }
-        const newTitle = file.name.replace(/\.pdf$/i, "");
-        const { data, error } = await supabase.from("user_documents").insert({ user_id: profile?.id, title: newTitle, content: pagesHtml }).select("*").single();
-        if (error) throw error;
-        await loadDocs(); selectDoc(data as Doc);
-        toast.success(`"${newTitle}" imported (${pdf.numPages} page${pdf.numPages > 1 ? "s" : ""})`);
-      } catch (err: any) {
-        toast.error(`Failed: "${file.name}" — ${err?.message || "Unknown error"}`);
-      }
-    }
-    setImporting(false);
-  };
-
-  /* ── Export ── */
-  const exportCSS = `body{font-family:${font};width:210mm;margin:0 auto;padding:25.4mm;line-height:1.5;font-size:${size}pt}
-    h1{font-size:2em;font-weight:700;margin:.6em 0 .3em}h2{font-size:1.5em;font-weight:700;margin:.6em 0 .3em}h3{font-size:1.2em;font-weight:600;margin:.6em 0 .3em}
-    p{margin:0 0 8pt 0}table{border-collapse:collapse;width:100%;margin:8px 0}td,th{border:1.5px solid #9ca3af;padding:6px 10px;vertical-align:top}
-    th{background:#f3f4f6;font-weight:600}ul{list-style:disc;padding-left:1.5em}ol{list-style:decimal;padding-left:1.5em}img{max-width:100%;height:auto}
-    .pdf-page{page-break-after:always}@media print{body{padding:10mm}}`;
-  const fullHtml = (body: string) => `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title><style>${exportCSS}</style></head><body>${body}</body></html>`;
-  const dl = (content: string, type: string, name: string) => {
-    Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([content], { type })), download: name }).click();
-  };
-  const printDoc = () => {
-    const w = window.open("", "_blank"); if (!w) return;
-    w.document.write(fullHtml(editorRef.current?.innerHTML || "")); w.document.close(); w.print();
-  };
-
-  const preserveSelection = (e: React.MouseEvent) => e.preventDefault();
-
-  /* ── Ribbon content per tab ── */
-  const ribbon = () => {
-    switch (tab) {
-      case "File":
-        return (
-          <>
-            <RGroup label="Document">
-              <RBtn title="New document" wide onClick={createNewDoc}>New</RBtn>
-              <RBtn title="Import Word" wide onClick={() => wordRef.current?.click()}>Import Word</RBtn>
-              <RBtn title="Import PDF" wide onClick={() => pdfRef.current?.click()}>Import PDF</RBtn>
-              <RBtn title="Save now" wide onClick={handleSaveNow}>{saving ? "Saving…" : "Save"}</RBtn>
-            </RGroup>
-            <RGroup label="Export">
-              <RBtn title="Download HTML" wide onClick={() => dl(fullHtml(editorRef.current?.innerHTML || ""), "text/html", `${title}.html`)}>HTML</RBtn>
-              <RBtn title="Print / Save as PDF" wide onClick={printDoc}>Print / PDF</RBtn>
-              <RBtn title="Download TXT" wide onClick={() => dl(editorRef.current?.innerText || "", "text/plain", `${title}.txt`)}>TXT</RBtn>
-            </RGroup>
-            <RGroup label="Info">
-              <span className="px-2 text-xs text-white/50">{stats.words} words · {stats.chars} characters · {pageCount} page{pageCount > 1 ? "s" : ""}</span>
-            </RGroup>
-          </>
-        );
-      case "Home":
-        return (
-          <>
-            <RGroup label="Undo">
-              <RBtn title="Undo" onClick={() => exec("undo")}>↶</RBtn>
-              <RBtn title="Redo" onClick={() => exec("redo")}>↷</RBtn>
-            </RGroup>
-            <RGroup label="Font">
-              <select value={font} onMouseDown={preserveSelection} onChange={e => { setFont(e.target.value); exec("fontName", e.target.value); }} className="h-8 rounded border border-white/15 bg-white/5 px-1 text-xs text-white">
-                {FONTS.map(f => <option key={f} value={f} className="bg-[#252525]">{f}</option>)}
-              </select>
-              <select value={size} onMouseDown={preserveSelection} onChange={e => { const px = Number(e.target.value); setSize(px); applyStyleToSelection(s => s.style.fontSize = `${px}pt`); }} className="h-8 w-14 rounded border border-white/15 bg-white/5 px-1 text-xs text-white">
-                {SIZES.map(s => <option key={s} value={s} className="bg-[#252525]">{s}</option>)}
-              </select>
-              <RBtn title="Bold" active={fmt.bold} onClick={() => exec("bold")}><b>B</b></RBtn>
-              <RBtn title="Italic" active={fmt.italic} onClick={() => exec("italic")}><i>I</i></RBtn>
-              <RBtn title="Underline" active={fmt.underline} onClick={() => exec("underline")}><u>U</u></RBtn>
-              <RBtn title="Strikethrough" active={fmt.strikeThrough} onClick={() => exec("strikeThrough")}><s>S</s></RBtn>
-              <RPopover title="Text color" label={<span className="text-red-500">A</span>}>
-                {close => (<div className="grid grid-cols-5 gap-1">{COLORS.map(c => (
-                  <button key={c} onMouseDown={preserveSelection} onClick={() => { exec("foreColor", c); close(); }} className="h-6 w-6 rounded border border-white/20" style={{ background: c }} />
-                ))}</div>)}
-              </RPopover>
-              <RPopover title="Highlight" label={<span className="rounded bg-yellow-300/80 px-1 text-black">H</span>}>
-                {close => (<div className="grid grid-cols-4 gap-1">{HIGHLIGHTS.map(c => (
-                  <button key={c} onMouseDown={preserveSelection} onClick={() => { exec("hiliteColor", c); close(); }} className="h-6 w-6 rounded border border-white/20" style={{ background: c === "transparent" ? "#fff" : c }} />
-                ))}</div>)}
-              </RPopover>
-              <RBtn title="Clear formatting" onClick={() => exec("removeFormat")}>⌫A</RBtn>
-            </RGroup>
-            <RGroup label="Paragraph">
-              <RBtn title="Bullet list" active={fmt.insertUnorderedList} onClick={() => exec("insertUnorderedList")}>•</RBtn>
-              <RBtn title="Numbered list" active={fmt.insertOrderedList} onClick={() => exec("insertOrderedList")}>1.</RBtn>
-              <RBtn title="Align left" active={fmt.justifyLeft} onClick={() => exec("justifyLeft")}>≡</RBtn>
-              <RBtn title="Align center" active={fmt.justifyCenter} onClick={() => exec("justifyCenter")}>⋮≡</RBtn>
-              <RBtn title="Align right" active={fmt.justifyRight} onClick={() => exec("justifyRight")}>≡⋮</RBtn>
-              <RBtn title="Justify" active={fmt.justifyFull} onClick={() => exec("justifyFull")}>▤</RBtn>
-            </RGroup>
-            <RGroup label="Styles">
-              {[["Normal", "p"], ["H1", "h1"], ["H2", "h2"], ["H3", "h3"]].map(([label, block]) => (
-                <RBtn key={block} title={`${label} style`} wide onClick={() => applyBlock(block)}>{label}</RBtn>
-              ))}
-            </RGroup>
-          </>
-        );
-      case "Insert":
-        return (
-          <>
-            <RGroup label="Tables">
-              <RBtn title="Insert table" wide onClick={() => { restoreSelection(); setShowTableModal(true); }}>Table</RBtn>
-              {activeTable && (
-                <>
-                  <RBtn title="Add row" wide onClick={() => addTableRow(activeTable)}>+ Row</RBtn>
-                  <RBtn title="Add column" wide onClick={() => addTableColumn(activeTable)}>+ Column</RBtn>
-                </>
-              )}
-            </RGroup>
-            <RGroup label="Illustrations">
-              <RBtn title="Insert image" wide onClick={() => imgRef.current?.click()}>Picture</RBtn>
-            </RGroup>
-            <RGroup label="Links">
-              <RBtn title="Insert link" wide onClick={insertLink}>Link</RBtn>
-              <RBtn title="Remove link" wide onClick={() => exec("unlink")}>Unlink</RBtn>
-            </RGroup>
-            <RGroup label="Text">
-              <RBtn title="Page break" wide onClick={() => insertHTML('<div style="page-break-after:always;"></div>')}>Page break</RBtn>
-            </RGroup>
-          </>
-        );
-      case "Layout":
-        return (
-          <RGroup label="Zoom">
-            <RBtn title="Zoom out" onClick={() => setZoom(z => Math.max(50, z - 10))}>−</RBtn>
-            <span className="w-12 text-center text-xs text-white/60">{zoom}%</span>
-            <RBtn title="Zoom in" onClick={() => setZoom(z => Math.min(200, z + 10))}>+</RBtn>
-            <RBtn title="Reset zoom" wide onClick={() => setZoom(100)}>100%</RBtn>
-          </RGroup>
-        );
-      case "Review":
-        return (
-          <RGroup label="Info">
-            <span className="px-2 text-xs text-white/50">{stats.words} words · {pageCount} page{pageCount > 1 ? "s" : ""}</span>
-          </RGroup>
-        );
-      case "View":
-        return (
-          <RGroup label="Zoom">
-            <RBtn title="Zoom out" onClick={() => setZoom(z => Math.max(50, z - 10))}>−</RBtn>
-            <span className="w-12 text-center text-xs text-white/60">{zoom}%</span>
-            <RBtn title="Zoom in" onClick={() => setZoom(z => Math.min(200, z + 10))}>+</RBtn>
-          </RGroup>
-        );
+  const push=()=>{const url=baseRef.current!.toDataURL();setHist(({list,idx})=>{const t=list.slice(0,idx+1);return{list:[...t,url],idx:t.length};});};
+  const loadIdx=(idx:number,list:string[])=>{const img=new Image();img.onload=()=>{const c=baseRef.current!;c.width=img.width;c.height=img.height;c.getContext("2d")!.drawImage(img,0,0);syncSize();};img.src=list[idx];};
+  const undo=()=>setHist(({list,idx})=>{if(idx<=0)return{list,idx};loadIdx(idx-1,list);return{list,idx:idx-1};});
+  const redo=()=>setHist(({list,idx})=>{if(idx>=list.length-1)return{list,idx};loadIdx(idx+1,list);return{list,idx:idx+1};});
+  const rotate=(d:1|-1)=>{const b=baseRef.current!,tmp=document.createElement("canvas");tmp.width=b.height;tmp.height=b.width;const t=tmp.getContext("2d")!;t.translate(tmp.width/2,tmp.height/2);t.rotate(Math.PI/2*d);t.drawImage(b,-b.width/2,-b.height/2);b.width=tmp.width;b.height=tmp.height;b.getContext("2d")!.drawImage(tmp,0,0);syncSize();push();};
+  const flip=(ax:"h"|"v")=>{const b=baseRef.current!,tmp=document.createElement("canvas");tmp.width=b.width;tmp.height=b.height;const t=tmp.getContext("2d")!;if(ax==="h"){t.translate(tmp.width,0);t.scale(-1,1);}else{t.translate(0,tmp.height);t.scale(1,-1);}t.drawImage(b,0,0);const bctx=b.getContext("2d")!;bctx.clearRect(0,0,b.width,b.height);bctx.drawImage(tmp,0,0);push();};
+  const getPos=(clientX:number,clientY:number)=>{const c=baseRef.current!,r=c.getBoundingClientRect();return{x:(clientX-r.left)*(c.width/r.width),y:(clientY-r.top)*(c.height/r.height)};};
+  const commitOverlay=()=>{if(!hadDraw.current)return;const b=baseRef.current!,o=overlayRef.current!;b.getContext("2d")!.drawImage(o,0,0);o.getContext("2d")!.clearRect(0,0,o.width,o.height);hadDraw.current=false;push();};
+  const onDown=(e:React.PointerEvent<HTMLCanvasElement>)=>{if(tab!=="draw")return;const p=getPos(e.clientX,e.clientY);if(tool==="text"){setTextPos(p);return;}drawing.current=true;hadDraw.current=false;startPos.current=p;lastPos.current=p;};
+  const onMove=(e:React.PointerEvent<HTMLCanvasElement>)=>{
+    if(tab!=="draw"||!drawing.current)return;
+    const o=overlayRef.current!,ctx=o.getContext("2d")!,p=getPos(e.clientX,e.clientY);hadDraw.current=true;
+    if(["pen","highlighter","eraser"].includes(tool)){
+      ctx.globalCompositeOperation=tool==="eraser"?"destination-out":"source-over";
+      ctx.strokeStyle=tool==="highlighter"?color+"66":color;ctx.lineWidth=tool==="highlighter"?sw*4:tool==="eraser"?sw*5:sw;ctx.lineCap="round";ctx.lineJoin="round";
+      ctx.beginPath();ctx.moveTo(lastPos.current!.x,lastPos.current!.y);ctx.lineTo(p.x,p.y);ctx.stroke();lastPos.current=p;
+    }else{
+      ctx.clearRect(0,0,o.width,o.height);ctx.globalCompositeOperation="source-over";ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=sw;
+      const s=startPos.current!;
+      if(tool==="rect")ctx.strokeRect(Math.min(s.x,p.x),Math.min(s.y,p.y),Math.abs(p.x-s.x),Math.abs(p.y-s.y));
+      else if(tool==="circle"){const rx=Math.abs(p.x-s.x)/2,ry=Math.abs(p.y-s.y)/2;ctx.beginPath();ctx.ellipse((s.x+p.x)/2,(s.y+p.y)/2,rx,ry,0,0,Math.PI*2);ctx.stroke();}
+      else if(tool==="arrow")drawArrow(ctx,s.x,s.y,p.x,p.y,sw,color);
     }
   };
+  const onUp=()=>{if(tab==="draw"&&drawing.current){drawing.current=false;commitOverlay();}};
+  const placeText=()=>{if(!textPos||!textInput.trim())return;const ctx=overlayRef.current!.getContext("2d")!;ctx.font=`${Math.max(16,sw*7)}px Arial`;ctx.fillStyle=color;ctx.textBaseline="top";ctx.fillText(textInput,textPos.x,textPos.y);hadDraw.current=true;commitOverlay();setTextInput("");setTextPos(null);};
+  const applyCrop=()=>{if(!cropRect||cropRect.w<4||cropRect.h<4){toast.error("Select crop area first");return;}const b=baseRef.current!,{x,y,w,h}=cropRect;const tmp=document.createElement("canvas");tmp.width=w;tmp.height=h;tmp.getContext("2d")!.drawImage(b,x,y,w,h,0,0,w,h);b.width=w;b.height=h;b.getContext("2d")!.drawImage(tmp,0,0);syncSize();setCropRect(null);push();setTab("draw");};
+  const handleSave=()=>{const b=baseRef.current!,tmp=document.createElement("canvas");tmp.width=b.width;tmp.height=b.height;const t=tmp.getContext("2d")!;(t as any).filter=cssFilter;t.drawImage(b,0,0);onSave(tmp.toDataURL("image/png"));};
+  const cropCssPos=cropRect&&baseRef.current?{left:cropRect.x*(baseRef.current.getBoundingClientRect().width/baseRef.current.width),top:cropRect.y*(baseRef.current.getBoundingClientRect().height/baseRef.current.height),width:cropRect.w*(baseRef.current.getBoundingClientRect().width/baseRef.current.width),height:cropRect.h*(baseRef.current.getBoundingClientRect().height/baseRef.current.height)}:null;
+  const Btn=(label:any,active=false,onClick?:()=>void,extra?:React.CSSProperties)=>(
+    <button onClick={onClick} style={{padding:"4px 10px",borderRadius:6,fontSize:12,fontWeight:600,border:"1px solid",cursor:"pointer",background:active?"white":"transparent",color:active?"black":"white",borderColor:active?"white":"rgba(255,255,255,0.3)",...extra}}>{label}</button>
+  );
 
-  return (
-    <div className="flex h-[calc(100vh-56px)] overflow-hidden bg-[#1e1e1e] text-white">
-      {showTableModal && <InsertTableModal onInsert={insertTable} onClose={() => setShowTableModal(false)} />}
-
-      {deleteOpen && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60" onClick={() => setDeleteOpen(false)}>
-          <div className="w-80 rounded-lg border border-white/10 bg-[#252525] p-4 text-white" onClick={e => e.stopPropagation()}>
-            <h3 className="mb-2 text-sm font-semibold">Delete Document?</h3>
-            <p className="mb-4 text-xs text-white/60">"{deleteTarget?.title}" will be permanently deleted.</p>
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setDeleteOpen(false)} className="rounded border border-white/20 px-3 py-1.5 text-sm hover:bg-white/10">Cancel</button>
-              <button onClick={handleDelete} className="rounded bg-red-600 px-3 py-1.5 text-sm font-medium hover:bg-red-500">Delete</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <input ref={wordRef} type="file" accept=".doc,.docx" multiple className="hidden" onChange={handleWordUpload} />
-      <input ref={pdfRef} type="file" accept=".pdf" multiple className="hidden" onChange={handlePdfUpload} />
-      <input ref={imgRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImageUpload} />
-
-      {/* Drawer tab */}
-      <div onClick={() => setDrawerOpen(o => !o)}
-        onPointerDown={e => { dragStartX.current = e.clientX; }}
-        onPointerMove={e => { if (dragStartX.current !== null && e.clientX - dragStartX.current > 24) { setDrawerOpen(true); dragStartX.current = null; } }}
-        onPointerUp={() => { dragStartX.current = null; }}
-        className="fixed left-0 top-1/2 z-40 flex h-16 w-4 -translate-y-1/2 cursor-grab items-center justify-center rounded-r-lg bg-blue-600/90 shadow-md transition-colors hover:bg-blue-600 active:cursor-grabbing"
-        title="Documents">
-        <ChevronRight className={cn("h-4 w-4 text-white transition-transform", drawerOpen && "rotate-180")} />
-      </div>
-      {drawerOpen && <div className="fixed inset-0 z-30 bg-black/40" onClick={() => setDrawerOpen(false)} />}
-      <div className={cn("fixed left-0 top-0 z-40 flex h-full w-72 flex-col border-r border-white/10 bg-[#232323] text-white shadow-2xl transition-transform duration-200", drawerOpen ? "translate-x-0" : "-translate-x-full")}>
-        <div className="space-y-2 border-b border-white/10 p-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold">Documents</h3>
-            <button onClick={() => setDrawerOpen(false)} className="rounded p-1 hover:bg-white/10"><X className="h-4 w-4" /></button>
-          </div>
-          <div className="flex gap-1.5">
-            <button onClick={() => { createNewDoc(); setDrawerOpen(false); }} className="flex h-7 flex-1 items-center justify-center gap-1 rounded bg-blue-600 text-xs hover:bg-blue-500"><Plus className="h-3.5 w-3.5" />New</button>
-            <button onClick={() => wordRef.current?.click()} disabled={importing} className="flex h-7 flex-1 items-center justify-center gap-1 rounded border border-white/15 text-xs hover:bg-white/10"><Upload className="h-3.5 w-3.5" />Word</button>
-            <button onClick={() => pdfRef.current?.click()} disabled={importing} className="flex h-7 flex-1 items-center justify-center gap-1 rounded border border-white/15 text-xs hover:bg-white/10"><FileUp className="h-3.5 w-3.5" />PDF</button>
-          </div>
-          <div className="relative">
-            <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/40" />
-            <Input value={docSearch} onChange={e => setDocSearch(e.target.value)} placeholder="Search documents…" className="h-7 border-white/15 bg-white/5 pl-7 text-xs text-white placeholder:text-white/40" />
-          </div>
-          <button onClick={() => setDocSort(s => s === "recent" ? "name" : "recent")} className="flex items-center gap-1 text-xs text-white/50 hover:text-white">
-            <ArrowUpDown className="h-3 w-3" /> Sort: {docSort === "recent" ? "Recent" : "Name"}
-          </button>
-        </div>
-        <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
-          {filteredSortedDocs.length === 0 && <p className="py-6 text-center text-xs text-white/40">{docSearch ? "No documents match your search" : "No documents yet"}</p>}
-          {filteredSortedDocs.map(doc => (
-            <div key={doc.id} onClick={() => { selectDoc(doc); setDrawerOpen(false); }}
-              className={cn("group flex cursor-pointer items-center justify-between rounded-lg px-2 py-1.5 transition-colors", selectedDoc?.id === doc.id ? "bg-blue-600/20 text-blue-300" : "hover:bg-white/5")}>
-              <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                <FileText className="h-3.5 w-3.5 shrink-0" />
-                {renamingId === doc.id ? (
-                  <Input autoFocus value={renameValue} onClick={e => e.stopPropagation()} onChange={e => setRenameValue(e.target.value)}
-                    onBlur={() => commitRename(doc)} onKeyDown={e => { if (e.key === "Enter") commitRename(doc); if (e.key === "Escape") setRenamingId(null); }}
-                    className="h-6 border-white/15 bg-white/5 px-1 text-xs text-white" />
-                ) : <span className="truncate text-xs">{doc.title}</span>}
-              </div>
-              <div className="flex shrink-0 items-center opacity-0 group-hover:opacity-100">
-                <button onClick={e => { e.stopPropagation(); startRename(doc); }} className="rounded p-1 hover:bg-white/10" title="Rename"><Pencil className="h-3 w-3" /></button>
-                <button onClick={e => { e.stopPropagation(); duplicateDoc(doc); }} className="rounded p-1 hover:bg-white/10" title="Duplicate"><Copy className="h-3 w-3" /></button>
-                <button onClick={e => { e.stopPropagation(); setDeleteTarget(doc); setDeleteOpen(true); }} className="rounded p-1 hover:bg-red-500/20" title="Delete"><Trash2 className="h-3 w-3 text-red-400" /></button>
-              </div>
-            </div>
-          ))}
+  return(
+    <div className="fixed inset-0 z-[200] flex flex-col" style={{background:"rgba(0,0,0,0.95)"}}>
+      <div style={{background:"#1a1a1a",borderBottom:"1px solid rgba(255,255,255,0.12)",padding:"7px 12px",display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
+        <span style={{color:"white",fontWeight:700,fontSize:13,marginRight:4}}>Edit Image</span>
+        {(["draw","adjust","transform","crop"] as ImgTab[]).map(t=>Btn(t.charAt(0).toUpperCase()+t.slice(1),tab===t,()=>setTab(t)))}
+        <div style={{width:1,height:20,background:"rgba(255,255,255,0.2)",margin:"0 2px"}}/>
+        {Btn(<Undo className="h-4 w-4"/>,false,undo,{opacity:hist.idx<=0?0.3:1} as React.CSSProperties)}
+        {Btn(<Redo className="h-4 w-4"/>,false,redo,{opacity:hist.idx>=hist.list.length-1?0.3:1} as React.CSSProperties)}
+        <div style={{width:1,height:20,background:"rgba(255,255,255,0.2)",margin:"0 2px"}}/>
+        {Btn(<ZoomOut className="h-4 w-4"/>,false,()=>setZoom(z=>Math.max(0.25,+(z-0.25).toFixed(2))))}
+        <span style={{color:"rgba(255,255,255,0.7)",fontSize:12,minWidth:36,textAlign:"center"}}>{Math.round(zoom*100)}%</span>
+        {Btn(<ZoomIn className="h-4 w-4"/>,false,()=>setZoom(z=>Math.min(4,+(z+0.25).toFixed(2))))}
+        <div style={{marginLeft:"auto",display:"flex",gap:6}}>
+          <input ref={replaceRef} type="file" accept="image/*" style={{display:"none"}} onChange={e=>{const f=e.target.files?.[0];if(f)onReplace(f);e.target.value="";}}/>
+          {Btn("Replace",false,()=>replaceRef.current?.click())}
+          {Btn("Delete",false,onDelete,{borderColor:"#f87171",color:"#f87171"})}
+          {Btn("Cancel",false,onClose)}
+          <button onClick={handleSave} style={{padding:"4px 16px",borderRadius:6,border:"none",background:"white",color:"black",cursor:"pointer",fontSize:12,fontWeight:700}}>Save</button>
         </div>
       </div>
-
-      {/* Main column */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {/* Title bar */}
-        <div className="flex items-center gap-3 border-b border-white/10 bg-[#232323] px-4 py-2">
-          <span className="rounded bg-blue-600 px-2 py-0.5 text-xs font-bold">W</span>
-          {selectedDoc ? (
-            <Input value={title} onChange={e => setTitle(e.target.value)} onBlur={handleSaveNow}
-              className="h-7 min-w-0 flex-1 border-transparent bg-transparent px-2 text-sm font-medium text-white focus-visible:ring-0" placeholder="Document title…" />
-          ) : <span className="flex-1 text-sm text-white/50">No document open</span>}
-          <span className="hidden text-xs text-white/40 sm:inline">{saving ? "Saving…" : "Autosaved"}</span>
-        </div>
-
-        {/* Tabs */}
-        <div className="flex gap-1 border-b border-white/10 bg-[#232323] px-3">
-          {TABS.map(t => (
-            <button key={t} onClick={() => setTab(t)} className={cn("px-3 py-2 text-sm transition-colors", tab === t ? "border-b-2 border-blue-500 font-medium text-white" : "text-white/50 hover:text-white")}>
-              {t}
-            </button>
+      <div style={{background:"#111",padding:"5px 12px",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",minHeight:42}}>
+        {tab==="draw"&&<>
+          {([["pen",<Pencil className="h-4 w-4"/>],["highlighter",<Highlighter className="h-4 w-4"/>],["eraser",<Eraser className="h-4 w-4"/>],["rect",<Square className="h-4 w-4"/>],["circle",<Circle className="h-4 w-4"/>],["arrow",<ArrowUpRight className="h-4 w-4"/>],["text",<Type className="h-4 w-4"/>]] as [DrawTool,React.ReactNode][]).map(([t,icon])=>Btn(icon,tool===t,()=>setTool(t)))}
+          <input type="color" value={color} onChange={e=>setColor(e.target.value)} style={{width:26,height:26,borderRadius:4,cursor:"pointer",border:"none"}}/>
+          <label style={{color:"rgba(255,255,255,0.6)",fontSize:12,display:"flex",alignItems:"center",gap:4}}>Size<input type="range" min={1} max={20} value={sw} onChange={e=>setSw(Number(e.target.value))} style={{width:70}}/></label>
+          {tool==="text"&&textPos&&<>
+            <input autoFocus value={textInput} onChange={e=>setTextInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&placeText()} placeholder="Type, then click image…" style={{background:"rgba(255,255,255,0.1)",color:"white",border:"1px solid rgba(255,255,255,0.2)",borderRadius:6,padding:"3px 8px",fontSize:13,outline:"none",width:150}}/>
+            {Btn("Place",false,placeText,{background:"white",color:"black",borderColor:"white"})}
+          </>}
+        </>}
+        {tab==="adjust"&&<>
+          {[["Brightness",brightness,setBrightness,40,180],["Contrast",contrast,setContrast,40,180],["Saturation",saturation,setSaturation,0,200],["Blur",blur,setBlur,0,10]].map(([l,v,s,mn,mx])=>(
+            <label key={l as string} style={{color:"rgba(255,255,255,0.7)",fontSize:12,display:"flex",alignItems:"center",gap:5}}>
+              {l as string}<input type="range" min={mn as number} max={mx as number} value={v as number} onChange={e=>(s as any)(Number(e.target.value))} style={{width:80}}/><span style={{minWidth:28}}>{v as number}{l==="Blur"?"px":"%"}</span>
+            </label>
           ))}
-        </div>
-
-        {/* Ribbon */}
-        <div className="sticky top-0 z-30 flex items-stretch gap-1 overflow-x-auto border-b border-white/10 bg-[#2b2b2b] px-2 py-1">
-          {ribbon()}
-        </div>
-
-        {/* Page area */}
-        {selectedDoc ? (
-          <div className="flex-1 overflow-y-auto bg-[#0f0f0f] py-8">
-            <style>{`
-              .ld-editor{outline:none;line-height:1.5;color:#111;}
-              .ld-editor:empty:before{content:"Start typing here…";color:#9ca3af;pointer-events:none;}
-              .ld-editor h1{font-size:2em;font-weight:700;margin:.6em 0 .3em;}
-              .ld-editor h2{font-size:1.5em;font-weight:700;margin:.6em 0 .3em;}
-              .ld-editor h3{font-size:1.2em;font-weight:600;margin:.6em 0 .3em;}
-              .ld-editor ul{list-style:disc !important;padding-left:1.6em !important;margin:4px 0;}
-              .ld-editor ol{list-style:decimal !important;padding-left:1.6em !important;margin:4px 0;}
-              .ld-editor li{display:list-item !important;margin:2px 0;}
-              .ld-editor table{border-collapse:collapse;width:100%;margin:8px 0;}
-              .ld-editor td,.ld-editor th{border:1.5px solid #9ca3af;padding:6px 10px;vertical-align:top;min-width:40px;word-break:break-word;}
-              .ld-editor th{background:#f3f4f6;font-weight:600;}
-              .ld-editor img{max-width:100%;height:auto;display:block;margin:8px 0;}
-              .ld-editor a{color:#2563eb;text-decoration:underline;}
-              .ld-editor p{margin:0 0 8pt 0;min-height:1.4em;}
-            `}</style>
-
-            <div style={{ display: "flex", justifyContent: "center", transform: `scale(${zoom / 100})`, transformOrigin: "top center" }}>
-              <div style={{
-                background: "#ffffff", width: PAGE_W_PX, minHeight: PAGE_H_PX, padding: PAGE_PAD_PX,
-                boxShadow: "0 1px 6px rgba(0,0,0,0.4)", fontFamily: font, fontSize: size + "pt", boxSizing: "border-box",
-              }}>
-                <div
-                  ref={editorRef}
-                  contentEditable suppressContentEditableWarning
-                  className="ld-editor"
-                  onInput={triggerSave}
-                  onKeyUp={() => { syncFormatState(); updateActiveTable(); }}
-                  onMouseUp={() => { syncFormatState(); updateActiveTable(); }}
-                  onClick={updateActiveTable}
-                />
-              </div>
-            </div>
-
-            {pageCount > 1 && (
-              <div className="mx-auto mt-4 flex justify-center gap-2" style={{ width: PAGE_W_PX * (zoom / 100) }}>
-                {Array.from({ length: pageCount }, (_, i) => (
-                  <div key={i} className="rounded border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-white/40">Page {i + 1} of {pageCount}</div>
-                ))}
+          {Btn("Reset",false,()=>{setBrightness(100);setContrast(100);setSaturation(100);setBlur(0);})}
+        </>}
+        {tab==="transform"&&<>
+          {Btn(<RotateCcw className="h-4 w-4"/>,false,()=>rotate(-1))}
+          {Btn(<RotateCw className="h-4 w-4"/>,false,()=>rotate(1))}
+          {Btn(<FlipHorizontal className="h-4 w-4"/>,false,()=>flip("h"))}
+          {Btn(<FlipVertical className="h-4 w-4"/>,false,()=>flip("v"))}
+        </>}
+        {tab==="crop"&&<>
+          <span style={{color:"rgba(255,255,255,0.6)",fontSize:12}}>Drag to select crop area on image</span>
+          {Btn("Apply Crop",false,applyCrop,{background:"white",color:"black",borderColor:"white"})}
+          {Btn("Clear",false,()=>setCropRect(null))}
+        </>}
+      </div>
+      <div style={{flex:1,overflow:"auto",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        {!ready&&<span style={{color:"white",fontSize:13}}>Loading image…</span>}
+        <div style={{position:"relative",transform:`scale(${zoom})`,transformOrigin:"center center"}}>
+          <div style={{position:"relative",filter:cssFilter}}>
+            <canvas ref={baseRef} style={{display:"block",maxWidth:"80vw",maxHeight:"66vh",border:"2px solid rgba(255,255,255,0.15)",borderRadius:4}}/>
+            <canvas ref={overlayRef}
+              style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",cursor:tab==="draw"?(tool==="eraser"?"cell":tool==="text"?"text":"crosshair"):"default"}}
+              onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp}/>
+            {tab==="crop"&&(
+              <div style={{position:"absolute",inset:0,cursor:"crosshair"}}
+                onPointerDown={e=>{const p=getPos(e.clientX,e.clientY);cropStart.current=p;setCropRect({x:p.x,y:p.y,w:0,h:0});}}
+                onPointerMove={e=>{if(!cropStart.current)return;const p=getPos(e.clientX,e.clientY),ss=cropStart.current;setCropRect({x:Math.min(ss.x,p.x),y:Math.min(ss.y,p.y),w:Math.abs(p.x-ss.x),h:Math.abs(p.y-ss.y)});}}
+                onPointerUp={()=>{cropStart.current=null;}} onPointerLeave={()=>{cropStart.current=null;}}>
+                {cropCssPos&&<div style={{position:"absolute",...cropCssPos,border:"2px dashed #fff",background:"rgba(255,255,255,0.12)",pointerEvents:"none"}}/>}
               </div>
             )}
           </div>
-        ) : (
-          <div className="flex flex-1 flex-col items-center justify-center bg-[#0f0f0f] p-8 text-center">
-            <FileText className="mb-4 h-16 w-16 text-white/20" />
-            <h2 className="mb-2 text-xl font-semibold text-white">No document selected</h2>
-            <p className="mb-6 text-sm text-white/50">Drag the arrow on the left edge to open your documents, or start a new one</p>
-            <div className="flex flex-wrap justify-center gap-3">
-              <button onClick={createNewDoc} className="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm font-medium hover:bg-blue-500"><Plus className="h-4 w-4" />New Document</button>
-              <button onClick={() => wordRef.current?.click()} className="flex items-center gap-2 rounded border border-white/15 px-4 py-2 text-sm hover:bg-white/10"><Upload className="h-4 w-4" />Import Word</button>
-              <button onClick={() => pdfRef.current?.click()} className="flex items-center gap-2 rounded border border-white/15 px-4 py-2 text-sm hover:bg-white/10"><FileUp className="h-4 w-4" />Import PDF</button>
-            </div>
-          </div>
-        )}
-
-        {/* Status bar */}
-        <div className="sticky bottom-0 flex flex-wrap items-center gap-4 border-t border-white/10 bg-[#232323] px-4 py-1.5 text-xs text-white/50">
-          <span>{stats.words} words</span>
-          <span>{stats.chars} characters</span>
-          <span>{pageCount} page{pageCount > 1 ? "s" : ""}</span>
-          <span className="ml-auto">{zoom}%</span>
         </div>
       </div>
     </div>
+  );
+}
+
+/* ─── Insert Table Modal ─── */
+function InsertTableModal({onInsert,onClose}:{onInsert:(r:number,c:number)=>void;onClose:()=>void}){
+  const [rows,setRows]=useState(3);const [cols,setCols]=useState(3);
+  return(
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-xs">
+        <DialogHeader><DialogTitle>Insert Table</DialogTitle></DialogHeader>
+        <div className="space-y-3 py-2">
+          <div className="flex items-center gap-3"><label className="text-sm w-20">Rows:</label><Input type="number" min={1} max={50} value={rows} onChange={e=>setRows(Number(e.target.value))} className="w-24"/></div>
+          <div className="flex items-center gap-3"><label className="text-sm w-20">Columns:</label><Input type="number" min={1} max={10} value={cols} onChange={e=>setCols(Number(e.target.value))} className="w-24"/></div>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={()=>onInsert(rows,cols)}>Insert</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ══════════════════════════════════════════════
+   MAIN EDITOR
+══════════════════════════════════════════════ */
+export default function DocumentEditorPage(){
+  const {profile}=useAuth();
+  const editorRef=useRef<HTMLDivElement>(null);
+  const wordRef=useRef<HTMLInputElement>(null);
+  const imgRef=useRef<HTMLInputElement>(null);
+  const saveTimer=useRef<NodeJS.Timeout|null>(null);
+  const savedRange=useRef<Range|null>(null);
+
+  const [docs,setDocs]=useState<Doc[]>([]);
+  const [sel,setSel]=useState<Doc|null>(null);
+  const [title,setTitle]=useState("Untitled Document");
+  const [saving,setSaving]=useState(false);
+  const [importing,setImporting]=useState(false);
+  const [deleteOpen,setDeleteOpen]=useState(false);
+  const [deleteTarget,setDeleteTarget]=useState<Doc|null>(null);
+  const [showColorPicker,setShowColorPicker]=useState(false);
+  const [showBgPicker,setShowBgPicker]=useState(false);
+  const [formats,setFormats]=useState<Record<string,boolean>>({});
+  const [fontSize,setFontSize]=useState("11");
+  const [fontFamily,setFontFamily]=useState("Calibri");
+  const [pageZoom,setPageZoom]=useState(100);
+  const [showTableModal,setShowTableModal]=useState(false);
+  const [editImgEl,setEditImgEl]=useState<HTMLImageElement|null>(null);
+  const [editImgSrc,setEditImgSrc]=useState<string|null>(null);
+  const [drawerOpen,setDrawerOpen]=useState(false);
+  const [docSearch,setDocSearch]=useState("");
+  const [docSort,setDocSort]=useState<"recent"|"name">("recent");
+  const [renamingId,setRenamingId]=useState<string|null>(null);
+  const [renameVal,setRenameVal]=useState("");
+
+  const loadDocs=useCallback(async()=>{
+    if(!profile)return;
+    const{data}=await supabase.from("user_documents").select("*").eq("user_id",profile.id).order("updated_at",{ascending:false});
+    setDocs((data??[]) as Doc[]);
+  },[profile]);
+  useEffect(()=>{loadDocs();},[loadDocs]);
+
+  const filteredDocs=useMemo(()=>{
+    let list=docs;
+    if(docSearch.trim()){const q=docSearch.trim().toLowerCase();list=list.filter(d=>d.title.toLowerCase().includes(q));}
+    list=[...list];
+    if(docSort==="name")list.sort((a,b)=>a.title.localeCompare(b.title));
+    else list.sort((a,b)=>new Date(b.updated_at).getTime()-new Date(a.updated_at).getTime());
+    return list;
+  },[docs,docSearch,docSort]);
+
+  useEffect(()=>{
+    const h=()=>{const s=window.getSelection();if(!s||s.rangeCount===0)return;const r=s.getRangeAt(0);if(editorRef.current?.contains(r.commonAncestorContainer))savedRange.current=r.cloneRange();};
+    document.addEventListener("selectionchange",h);return()=>document.removeEventListener("selectionchange",h);
+  },[]);
+
+  const restoreSel=():Range|null=>{
+    const ed=editorRef.current;if(!ed)return null;ed.focus();
+    const s=window.getSelection();if(!s)return null;
+    if(savedRange.current&&ed.contains(savedRange.current.startContainer)){s.removeAllRanges();s.addRange(savedRange.current);return savedRange.current;}
+    const r=document.createRange();r.selectNodeContents(ed);r.collapse(false);s.removeAllRanges();s.addRange(r);return r;
+  };
+
+  useEffect(()=>{
+    const ed=editorRef.current;if(!ed)return;
+    const fn=(e:MouseEvent)=>{const t=e.target as HTMLElement;if(t.tagName==="IMG"){setEditImgEl(t as HTMLImageElement);setEditImgSrc((t as HTMLImageElement).src);}};
+    ed.addEventListener("click",fn);return()=>ed.removeEventListener("click",fn);
+  },[sel]);
+
+  /* ── Table resize + hover "+" row/col insert ── */
+  useEffect(()=>{
+    const editor=editorRef.current;if(!editor)return;
+    const RESIZE_ZONE=6, GUTTER=22, TOL=10;
+    type Resizing=|{type:"col";colgroup:HTMLTableColElement[];colIndex:number;startX:number;startWidth:number}|{type:"row";row:HTMLTableRowElement;startY:number;startHeight:number}|null;
+    let resizing:Resizing=null;
+    let hoverBtn:HTMLButtonElement|null=null;
+    const removeBtn=()=>{hoverBtn?.remove();hoverBtn=null;};
+
+    const ensureColgroup=(table:HTMLTableElement):HTMLTableColElement[]=>{
+      let cg=table.querySelector(":scope > colgroup") as HTMLElement|null;
+      const firstRow=table.rows[0];if(!firstRow)return[];
+      if(!cg){
+        cg=document.createElement("colgroup");
+        for(let i=0;i<firstRow.cells.length;i++){const col=document.createElement("col");col.style.width=firstRow.cells[i].getBoundingClientRect().width+"px";cg.appendChild(col);}
+        table.insertBefore(cg,table.firstChild);
+      }else{
+        while(cg.children.length<firstRow.cells.length){const col=document.createElement("col");const prev=cg.children[cg.children.length-1] as HTMLElement|undefined;col.style.width=(prev?.style.width)||"80px";cg.appendChild(col);}
+      }
+      return Array.from(cg.children) as HTMLTableColElement[];
+    };
+
+    const insertRowAt=(table:HTMLTableElement,afterIndex:number)=>{
+      const rows=table.rows;const ref=rows[afterIndex];const cellCount=ref?ref.cells.length:rows[0]?.cells.length||1;
+      const refHeight=ref?ref.getBoundingClientRect().height:undefined;
+      const tr=document.createElement("tr");
+      for(let i=0;i<cellCount;i++){const td=document.createElement("td");td.innerHTML="&nbsp;";td.setAttribute("style",cellStyleFor(false)+(refHeight?`height:${refHeight}px;`:""));tr.appendChild(td);}
+      if(ref)ref.after(tr);else table.appendChild(tr);
+      triggerSave();toast.success("Row added");
+    };
+
+    const insertColAt=(table:HTMLTableElement,afterIndex:number)=>{
+      const cols=ensureColgroup(table);const refWidth=cols[afterIndex]?.style.width||"80px";
+      const col=document.createElement("col");col.style.width=refWidth;
+      const refCol=cols[afterIndex];if(refCol)refCol.after(col);else table.querySelector("colgroup")!.appendChild(col);
+      Array.from(table.rows).forEach(row=>{
+        const isHead=row.cells[0]?.tagName==="TH";const cell=document.createElement(isHead?"th":"td");
+        cell.innerHTML=isHead?"Header":"&nbsp;";cell.setAttribute("style",cellStyleFor(isHead));
+        const refCell=row.cells[afterIndex];if(refCell)refCell.after(cell);else row.appendChild(cell);
+      });
+      triggerSave();toast.success("Column added");
+    };
+
+    const showPlus=(x:number,y:number,onClick:()=>void)=>{
+      removeBtn();const btn=document.createElement("button");btn.textContent="+";
+      Object.assign(btn.style,{position:"fixed",left:`${x-9}px`,top:`${y-9}px`,width:"18px",height:"18px",borderRadius:"50%",border:"none",background:"#4a86e8",color:"white",fontSize:"13px",lineHeight:"18px",textAlign:"center",cursor:"pointer",zIndex:"9999",padding:"0",boxShadow:"0 1px 4px rgba(0,0,0,0.35)"});
+      btn.onmousedown=ev=>ev.stopPropagation();btn.onclick=ev=>{ev.stopPropagation();onClick();removeBtn();};
+      document.body.appendChild(btn);hoverBtn=btn;
+    };
+
+    const onMouseMove=(e:MouseEvent)=>{
+      if(resizing){
+        if(resizing.type==="col"){const dx=e.clientX-resizing.startX;resizing.colgroup[resizing.colIndex].style.width=Math.max(30,resizing.startWidth+dx)+"px";}
+        else{const dy=e.clientY-resizing.startY;const h=Math.max(20,resizing.startHeight+dy)+"px";Array.from(resizing.row.cells).forEach(c=>((c as HTMLElement).style.height=h));}
+        return;
+      }
+      const target=e.target as HTMLElement;const cell=target.closest("td,th") as HTMLTableCellElement|null;
+      if(cell){const rect=cell.getBoundingClientRect();const isLastCol=cell.parentElement!.lastElementChild===cell;const nearRight=!isLastCol&&(rect.right-e.clientX)<RESIZE_ZONE;const nearBottom=(rect.bottom-e.clientY)<RESIZE_ZONE;editor.style.cursor=nearRight?"col-resize":nearBottom?"row-resize":"";}
+      else editor.style.cursor="";
+      const tables=editor.querySelectorAll("table");let matched=false;
+      tables.forEach(table=>{
+        if(matched)return;const tRect=table.getBoundingClientRect();
+        if(e.clientX>=tRect.left-GUTTER&&e.clientX<=tRect.left-2&&e.clientY>=tRect.top&&e.clientY<=tRect.bottom){
+          const rows=Array.from(table.rows);
+          for(let i=0;i<rows.length;i++){const rRect=rows[i].getBoundingClientRect();if(Math.abs(e.clientY-rRect.bottom)<TOL){showPlus(tRect.left-11,rRect.bottom,()=>insertRowAt(table,i));matched=true;break;}}
+        }
+        if(!matched&&e.clientY>=tRect.top-GUTTER&&e.clientY<=tRect.top-2&&e.clientX>=tRect.left&&e.clientX<=tRect.right){
+          const cells=Array.from(table.rows[0]?.cells||[]);
+          for(let j=0;j<cells.length;j++){const cRect=cells[j].getBoundingClientRect();if(Math.abs(e.clientX-cRect.right)<TOL){showPlus(cRect.right,tRect.top-11,()=>insertColAt(table,j));matched=true;break;}}
+        }
+      });
+      if(!matched&&hoverBtn&&!hoverBtn.matches(":hover"))removeBtn();
+    };
+
+    const onMouseDown=(e:MouseEvent)=>{
+      const target=e.target as HTMLElement;const cell=target.closest("td,th") as HTMLTableCellElement|null;if(!cell)return;
+      const table=cell.closest("table") as HTMLTableElement;const rect=cell.getBoundingClientRect();const isLastCol=cell.parentElement!.lastElementChild===cell;
+      if(!isLastCol&&(rect.right-e.clientX)<RESIZE_ZONE){const colgroup=ensureColgroup(table);const colIndex=Array.from(cell.parentElement!.children).indexOf(cell);resizing={type:"col",colgroup,colIndex,startX:e.clientX,startWidth:parseFloat(colgroup[colIndex]?.style.width)||rect.width};e.preventDefault();}
+      else if((rect.bottom-e.clientY)<RESIZE_ZONE){resizing={type:"row",row:cell.parentElement as HTMLTableRowElement,startY:e.clientY,startHeight:rect.height};e.preventDefault();}
+    };
+    const onMouseUp=()=>{if(resizing){resizing=null;triggerSave();}};
+    const onLeave=()=>{removeBtn();editor.style.cursor="";};
+    editor.addEventListener("mousemove",onMouseMove);editor.addEventListener("mousedown",onMouseDown);editor.addEventListener("mouseleave",onLeave);document.addEventListener("mouseup",onMouseUp);
+    return()=>{editor.removeEventListener("mousemove",onMouseMove);editor.removeEventListener("mousedown",onMouseDown);editor.removeEventListener("mouseleave",onLeave);document.removeEventListener("mouseup",onMouseUp);removeBtn();};
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[sel]);
+
+  const selectDoc=(doc:Doc)=>{
+    setSel(doc);setTitle(doc.title);
+    requestAnimationFrame(()=>{
+      if(editorRef.current){
+        let content=doc.content||"";
+        if(!content.includes("doc-page")){content=`<div class="doc-page doc-page-text">${content}</div>`;}
+        editorRef.current.innerHTML=content;editorRef.current.focus();
+      }
+    });
+  };
+
+  const createDoc=async()=>{
+    if(!profile)return;
+    const{data,error}=await supabase.from("user_documents").insert({user_id:profile.id,title:"Untitled Document",content:""}).select("*").single();
+    if(error)return toast.error(error.message);
+    toast.success("New document created!");await loadDocs();selectDoc(data as Doc);
+  };
+
+  const dupDoc=async(doc:Doc)=>{
+    if(!profile)return;
+    const{data,error}=await supabase.from("user_documents").insert({user_id:profile.id,title:doc.title+" (Copy)",content:doc.content}).select("*").single();
+    if(error)return toast.error(error.message);
+    toast.success("Duplicated!");await loadDocs();selectDoc(data as Doc);
+  };
+
+  const startRename=(doc:Doc)=>{setRenamingId(doc.id);setRenameVal(doc.title);};
+  const commitRename=async(doc:Doc)=>{
+    const t=renameVal.trim()||doc.title;setRenamingId(null);if(t===doc.title)return;
+    const{error}=await supabase.from("user_documents").update({title:t}).eq("id",doc.id);
+    if(error)return toast.error(error.message);
+    setDocs(prev=>prev.map(d=>d.id===doc.id?{...d,title:t}:d));if(sel?.id===doc.id)setTitle(t);
+  };
+
+  const autoSave=useCallback(async()=>{
+    if(!sel||!profile)return;
+    const content=editorRef.current?.innerHTML||"";
+    const{error}=await supabase.from("user_documents").update({title,content,updated_at:new Date().toISOString()}).eq("id",sel.id);
+    if(!error)setDocs(prev=>prev.map(d=>d.id===sel.id?{...d,title,content}:d));
+  },[sel,title,profile]);
+
+  const handleSave=async()=>{setSaving(true);await autoSave();setSaving(false);toast.success("Saved!");};
+  const triggerSave=()=>{if(saveTimer.current)clearTimeout(saveTimer.current);saveTimer.current=setTimeout(autoSave,1500);updateFmts();};
+
+  const handleDelete=async()=>{
+    if(!deleteTarget)return;
+    await supabase.from("user_documents").delete().eq("id",deleteTarget.id);
+    toast.success("Deleted!");setDeleteOpen(false);setDeleteTarget(null);
+    if(sel?.id===deleteTarget.id){setSel(null);if(editorRef.current)editorRef.current.innerHTML="";}
+    await loadDocs();
+  };
+
+  const exec=(cmd:string,val?:string)=>{restoreSel();document.execCommand(cmd,false,val);updateFmts();triggerSave();};
+  const updateFmts=()=>{try{setFormats({bold:document.queryCommandState("bold"),italic:document.queryCommandState("italic"),underline:document.queryCommandState("underline"),strikeThrough:document.queryCommandState("strikeThrough"),justifyLeft:document.queryCommandState("justifyLeft"),justifyCenter:document.queryCommandState("justifyCenter"),justifyRight:document.queryCommandState("justifyRight"),justifyFull:document.queryCommandState("justifyFull"),insertUnorderedList:document.queryCommandState("insertUnorderedList"),insertOrderedList:document.queryCommandState("insertOrderedList"),});}catch{}};
+  const applyBlock=(tag:string)=>{restoreSel();document.execCommand("formatBlock",false,`<${tag}>`);updateFmts();triggerSave();};
+
+  const insertTable=(rows:number,cols:number)=>{
+    const ed=editorRef.current;if(!ed)return;
+    const html=makeTableHtml(rows,cols)+"<p><br></p>";
+    const range=restoreSel();const s=window.getSelection();
+    if(s&&s.rangeCount>0&&range){
+      const lr=s.getRangeAt(0);lr.deleteContents();const frag=lr.createContextualFragment(html);const last=frag.lastChild;lr.insertNode(frag);
+      if(last){const ar=document.createRange();ar.setStartAfter(last);ar.collapse(true);s.removeAllRanges();s.addRange(ar);savedRange.current=ar.cloneRange();}
+    }else{const page=ed.querySelector(".doc-page-text")||ed;page.innerHTML+=html;}
+    setShowTableModal(false);triggerSave();toast.success("Table inserted!");
+  };
+
+  const handleImgUpload=(e:React.ChangeEvent<HTMLInputElement>)=>{
+    const files=Array.from(e.target.files||[]);if(!files.length)return;
+    restoreSel();
+    files.forEach(file=>{
+      const reader=new FileReader();
+      reader.onload=ev=>{
+        const src=ev.target?.result as string;const ed=editorRef.current;if(!ed)return;
+        ed.focus();const html=`<img src="${src}" style="max-width:100%;height:auto;display:block;margin:6px 0;cursor:pointer;"/>`;
+        const s=window.getSelection();
+        if(s&&s.rangeCount>0){const lr=s.getRangeAt(0);const frag=lr.createContextualFragment(html);lr.insertNode(frag);lr.collapse(false);}
+        else{const page=ed.querySelector(".doc-page-text")||ed;page.innerHTML+=html;}
+        triggerSave();
+      };reader.readAsDataURL(file);
+    });e.target.value="";
+  };
+
+  /* ── Word Import — docx-preview (pixel-perfect, real Word layout) ── */
+  const handleWordUpload=async(e:React.ChangeEvent<HTMLInputElement>)=>{
+    const files=Array.from(e.target.files||[]);if(!files.length)return;e.target.value="";
+    setImporting(true);
+    for(const file of files){
+      const stage=document.createElement("div");
+      stage.style.cssText="position:fixed;left:-99999px;top:0;";
+      document.body.appendChild(stage);
+      try{
+        toast.loading(`Importing "${file.name}"…`,{id:"import"});
+        const rawBuf=await file.arrayBuffer();
+        // Patch: copy header/footer refs to all sections (fixes blank header on pages 2+)
+        const buf=await normalizeSectionHeaders(rawBuf);
+        await renderAsync(buf,stage,stage,{
+          className:"wimp",inWrapper:true,breakPages:true,
+          ignoreLastRenderedPageBreak:false,experimental:true,useBase64URL:true,
+        });
+        const importedHtml=stage.innerHTML;
+        const pageHtml=`<div class="doc-page doc-page-docximport">${importedHtml}</div>`;
+        const newTitle=file.name.replace(/\.docx?$/i,"");
+        const{data,error}=await supabase.from("user_documents").insert({user_id:profile?.id,title:newTitle,content:pageHtml}).select("*").single();
+        if(error)throw error;
+        toast.success(`"${newTitle}" imported!`,{id:"import"});
+        await loadDocs();selectDoc(data as Doc);
+      }catch(err:any){
+        toast.error(`Failed: "${file.name}" — ${err?.message||"Unknown error"}`,{id:"import"});
+      }finally{
+        document.body.removeChild(stage);
+      }
+    }
+    setImporting(false);
+  };
+
+  const exportCSS=`
+    body{background:#e8eaed;margin:0;padding:32px 0;display:flex;flex-direction:column;align-items:center;gap:24px;}
+    .doc-page{background:#fff;width:${PAGE_WIDTH}px;box-sizing:border-box;box-shadow:0 1px 3px rgba(0,0,0,0.3);}
+    .doc-page-text{min-height:${PAGE_MIN_HEIGHT}px;padding:96px;font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.15;color:#000;}
+    .doc-page-docximport{width:auto;background:transparent;box-shadow:none;padding:0;min-height:0;overflow:visible;}
+    .doc-page-text h1{font-size:20pt;font-weight:700;margin:.3em 0;}
+    .doc-page-text h2{font-size:16pt;font-weight:700;margin:.3em 0;}
+    .doc-page-text h3{font-size:13pt;font-weight:600;margin:.3em 0;}
+    .doc-page-text table{border-collapse:collapse;width:100%;margin:6px 0;}
+    .doc-page-text td,.doc-page-text th{border:1px solid #999;padding:5px 8px;vertical-align:top;}
+    .doc-page-text th{background:#f0f0f0;font-weight:600;}
+    .doc-page-text ul{list-style:disc;padding-left:1.5em;}
+    .doc-page-text ol{list-style:decimal;padding-left:1.5em;}
+    @media print{
+      body{background:#fff;padding:0;gap:0;}
+      .doc-page{box-shadow:none;page-break-after:always;}
+      .doc-page-docximport{page-break-after:auto;}
+      .doc-page-docximport section{page-break-after:always;}
+    }
+  `;
+  const fullHtml=(body:string)=>`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title><style>${exportCSS}</style></head><body>${body}</body></html>`;
+  const dl=(content:string,type:string,name:string)=>{Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([content],{type})),download:name}).click();};
+  const printDoc=()=>{const w=window.open("","_blank");if(!w)return;w.document.write(fullHtml(editorRef.current?.innerHTML||""));w.document.close();w.print();};
+
+  const tb=(active:boolean)=>cn("h-7 w-7 p-0 rounded flex items-center justify-center transition-colors shrink-0 border",active?"bg-blue-100 border-blue-400 text-blue-700":"border-transparent hover:bg-gray-100 text-gray-700");
+
+  return(
+    <>
+      {showTableModal&&<InsertTableModal onInsert={insertTable} onClose={()=>setShowTableModal(false)}/>}
+      {editImgEl&&editImgSrc&&(
+        <ImageEditorModal src={editImgSrc}
+          onSave={d=>{if(editImgEl){editImgEl.src=d;}triggerSave();toast.success("Image updated!");setEditImgEl(null);setEditImgSrc(null);}}
+          onDelete={()=>{if(editImgEl)editImgEl.remove();triggerSave();toast.success("Removed");setEditImgEl(null);setEditImgSrc(null);}}
+          onReplace={f=>{const r=new FileReader();r.onload=ev=>{if(editImgEl){editImgEl.src=ev.target?.result as string;setEditImgSrc(ev.target?.result as string);}};r.readAsDataURL(f);}}
+          onClose={()=>{setEditImgEl(null);setEditImgSrc(null);}}/>
+      )}
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader><AlertDialogTitle>Delete Document?</AlertDialogTitle>
+            <AlertDialogDescription>"{deleteTarget?.title}" will be permanently deleted.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={handleDelete}>Delete</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <input ref={wordRef} type="file" accept=".doc,.docx" multiple className="hidden" onChange={handleWordUpload}/>
+      <input ref={imgRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImgUpload}/>
+
+      <div onClick={()=>setDrawerOpen(o=>!o)}
+        className="fixed left-0 top-1/2 -translate-y-1/2 z-40 flex items-center justify-center w-4 h-14 bg-blue-600 hover:bg-blue-700 rounded-r-lg cursor-pointer shadow-lg transition-colors">
+        <ChevronRight className={cn("h-3 w-3 text-white transition-transform",drawerOpen&&"rotate-180")}/>
+      </div>
+      {drawerOpen&&<div className="fixed inset-0 z-30 bg-black/20" onClick={()=>setDrawerOpen(false)}/>}
+
+      <div className={cn("fixed left-0 top-0 h-full w-64 bg-white border-r border-gray-200 z-40 flex flex-col shadow-2xl transition-transform duration-200",drawerOpen?"translate-x-0":"-translate-x-full")}>
+        <div className="p-3 border-b border-gray-200 space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-800">Documents</h3>
+            <button onClick={()=>setDrawerOpen(false)} className="p-1 hover:bg-gray-100 rounded"><X className="h-4 w-4 text-gray-500"/></button>
+          </div>
+          <div className="flex gap-1">
+            <Button size="sm" className="flex-1 gap-1 h-7 text-xs" onClick={()=>{createDoc();setDrawerOpen(false);}}>
+              <Plus className="h-3.5 w-3.5"/>New
+            </Button>
+            <Button size="sm" variant="outline" className="flex-1 gap-1 h-7 text-xs" onClick={()=>wordRef.current?.click()} disabled={importing}>
+              <Upload className="h-3.5 w-3.5"/>{importing?"…":"Word"}
+            </Button>
+          </div>
+          <div className="relative">
+            <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-gray-400"/>
+            <Input value={docSearch} onChange={e=>setDocSearch(e.target.value)} placeholder="Search…" className="h-7 text-xs pl-7"/>
+          </div>
+          <button onClick={()=>setDocSort(s=>s==="recent"?"name":"recent")} className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800">
+            <ArrowUpDown className="h-3 w-3"/>Sort: {docSort==="recent"?"Recent":"Name"}
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+          {filteredDocs.length===0&&<p className="text-xs text-gray-400 text-center py-6">{docSearch?"No results":"No documents yet"}</p>}
+          {filteredDocs.map(doc=>(
+            <div key={doc.id} onClick={()=>{selectDoc(doc);setDrawerOpen(false);}}
+              className={cn("flex items-center justify-between rounded px-2 py-1.5 cursor-pointer group transition-colors",sel?.id===doc.id?"bg-blue-50 text-blue-700":"hover:bg-gray-100 text-gray-700")}>
+              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                <FileText className="h-3.5 w-3.5 shrink-0"/>
+                {renamingId===doc.id?(
+                  <Input autoFocus value={renameVal} onClick={e=>e.stopPropagation()} onChange={e=>setRenameVal(e.target.value)}
+                    onBlur={()=>commitRename(doc)} onKeyDown={e=>{if(e.key==="Enter")commitRename(doc);if(e.key==="Escape")setRenamingId(null);}} className="h-6 text-xs px-1"/>
+                ):<span className="text-xs truncate">{doc.title}</span>}
+              </div>
+              <div className="flex items-center opacity-0 group-hover:opacity-100 shrink-0 gap-0.5">
+                <button onClick={e=>{e.stopPropagation();startRename(doc);}} className="p-1 rounded hover:bg-gray-200"><Pencil className="h-3 w-3"/></button>
+                <button onClick={e=>{e.stopPropagation();dupDoc(doc);}} className="p-1 rounded hover:bg-gray-200"><Copy className="h-3 w-3"/></button>
+                <button onClick={e=>{e.stopPropagation();setDeleteTarget(doc);setDeleteOpen(true);}} className="p-1 rounded hover:bg-red-100"><Trash2 className="h-3 w-3 text-red-500"/></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-col h-[calc(100vh-56px)] overflow-hidden" style={{background:"#f0f0f0"}}>
+        <div className="bg-white border-b border-gray-300 select-none" style={{boxShadow:"0 1px 3px rgba(0,0,0,0.1)"}}>
+          <div className="flex items-center gap-1 px-3 py-1.5 border-b border-gray-200">
+            <button onClick={handleSave} disabled={saving||!sel} className="flex items-center gap-1 px-3 py-1 rounded text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">
+              <Save className="h-3.5 w-3.5"/>{saving?"Saving…":"Save"}
+            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button disabled={!sel} className="flex items-center gap-1 px-3 py-1 rounded text-xs font-medium border border-gray-300 hover:bg-gray-50 disabled:opacity-50">
+                  <Download className="h-3.5 w-3.5"/>Export<ChevronDown className="h-3 w-3"/>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent>
+                <DropdownMenuItem onClick={printDoc}>🖨️ Save as PDF (Print)</DropdownMenuItem>
+                <DropdownMenuItem onClick={()=>dl(fullHtml(editorRef.current?.innerHTML||""),"text/html",`${title}.html`)}>📄 Download HTML</DropdownMenuItem>
+                <DropdownMenuItem onClick={()=>dl(editorRef.current?.innerText||"","text/plain",`${title}.txt`)}>📝 Download TXT</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <div className="w-px h-5 bg-gray-300 mx-1"/>
+            <button onClick={()=>exec("undo")} className={tb(false)}><Undo className="h-3.5 w-3.5"/></button>
+            <button onClick={()=>exec("redo")} className={tb(false)}><Redo className="h-3.5 w-3.5"/></button>
+          </div>
+          <div className="flex items-center gap-0.5 px-3 py-1 flex-wrap">
+            <Select defaultValue="p" onValueChange={applyBlock}>
+              <SelectTrigger className="h-7 w-28 text-xs border-gray-300"><SelectValue placeholder="Style"/></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="p">Normal</SelectItem>
+                <SelectItem value="h1"><span className="font-bold text-lg">Heading 1</span></SelectItem>
+                <SelectItem value="h2"><span className="font-bold text-base">Heading 2</span></SelectItem>
+                <SelectItem value="h3"><span className="font-semibold">Heading 3</span></SelectItem>
+                <SelectItem value="blockquote">Quote</SelectItem>
+                <SelectItem value="pre">Code</SelectItem>
+              </SelectContent>
+            </Select>
+            <div className="w-px h-5 bg-gray-300 mx-0.5"/>
+            <Select value={fontFamily} onValueChange={v=>{setFontFamily(v);exec("fontName",v);}}>
+              <SelectTrigger className="h-7 w-32 text-xs border-gray-300"><SelectValue/></SelectTrigger>
+              <SelectContent>{FONT_FAMILIES.map(f=><SelectItem key={f} value={f} style={{fontFamily:f}}>{f}</SelectItem>)}</SelectContent>
+            </Select>
+            <Select value={fontSize} onValueChange={v=>{
+              setFontSize(v);restoreSel();const s=window.getSelection();
+              if(s&&s.rangeCount>0&&!s.isCollapsed){const r=s.getRangeAt(0);const span=document.createElement("span");span.style.fontSize=v+"pt";try{r.surroundContents(span);}catch{}triggerSave();}
+            }}>
+              <SelectTrigger className="h-7 w-14 text-xs border-gray-300"><SelectValue/></SelectTrigger>
+              <SelectContent>{FONT_SIZES.map(s=><SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+            </Select>
+            <div className="w-px h-5 bg-gray-300 mx-0.5"/>
+            <button className={tb(formats.bold)} onClick={()=>exec("bold")}><Bold className="h-4 w-4"/></button>
+            <button className={tb(formats.italic)} onClick={()=>exec("italic")}><Italic className="h-4 w-4"/></button>
+            <button className={tb(formats.underline)} onClick={()=>exec("underline")}><Underline className="h-4 w-4"/></button>
+            <button className={tb(formats.strikeThrough)} onClick={()=>exec("strikeThrough")}><Strikethrough className="h-4 w-4"/></button>
+            <div className="w-px h-5 bg-gray-300 mx-0.5"/>
+            <div className="relative">
+              <button className={tb(false)} onClick={()=>{setShowColorPicker(p=>!p);setShowBgPicker(false);}}><Type className="h-4 w-4"/></button>
+              {showColorPicker&&(
+                <div className="absolute top-8 left-0 z-50 bg-white border border-gray-200 rounded-lg shadow-xl p-2 grid grid-cols-8 gap-1" style={{width:192}}>
+                  {COLORS.map(c=><button key={c} style={{backgroundColor:c,width:18,height:18,borderRadius:3,border:"1px solid rgba(0,0,0,0.15)"}} className="hover:scale-125 transition-transform" onClick={()=>{exec("foreColor",c);setShowColorPicker(false);}}/>)}
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <button className={tb(false)} onClick={()=>{setShowBgPicker(p=>!p);setShowColorPicker(false);}}><Palette className="h-4 w-4"/></button>
+              {showBgPicker&&(
+                <div className="absolute top-8 left-0 z-50 bg-white border border-gray-200 rounded-lg shadow-xl p-2 grid grid-cols-8 gap-1" style={{width:192}}>
+                  {COLORS.map(c=><button key={c} style={{backgroundColor:c,width:18,height:18,borderRadius:3,border:"1px solid rgba(0,0,0,0.15)"}} className="hover:scale-125 transition-transform" onClick={()=>{exec("hiliteColor",c);setShowBgPicker(false);}}/>)}
+                </div>
+              )}
+            </div>
+            <div className="w-px h-5 bg-gray-300 mx-0.5"/>
+            <button className={tb(formats.justifyLeft)} onClick={()=>exec("justifyLeft")}><AlignLeft className="h-4 w-4"/></button>
+            <button className={tb(formats.justifyCenter)} onClick={()=>exec("justifyCenter")}><AlignCenter className="h-4 w-4"/></button>
+            <button className={tb(formats.justifyRight)} onClick={()=>exec("justifyRight")}><AlignRight className="h-4 w-4"/></button>
+            <button className={tb(formats.justifyFull)} onClick={()=>exec("justifyFull")}><AlignJustify className="h-4 w-4"/></button>
+            <div className="w-px h-5 bg-gray-300 mx-0.5"/>
+            <button className={tb(formats.insertUnorderedList)} onClick={()=>exec("insertUnorderedList")}><List className="h-4 w-4"/></button>
+            <button className={tb(formats.insertOrderedList)} onClick={()=>exec("insertOrderedList")}><ListOrdered className="h-4 w-4"/></button>
+            <div className="w-px h-5 bg-gray-300 mx-0.5"/>
+            <button className={tb(false)} onClick={()=>{restoreSel();setShowTableModal(true);}}><Table className="h-4 w-4"/></button>
+            <button className={tb(false)} onClick={()=>imgRef.current?.click()}><ImageIcon className="h-4 w-4"/></button>
+            <button className={tb(false)} onClick={()=>{const u=prompt("Enter URL:");if(u)exec("createLink",u);}}><Link className="h-4 w-4"/></button>
+          </div>
+        </div>
+
+        {sel&&(
+          <div className="flex items-center gap-2 px-4 py-1 bg-white border-b border-gray-200">
+            <Input value={title} onChange={e=>setTitle(e.target.value)} onBlur={handleSave}
+              className="text-sm font-medium border-none shadow-none focus-visible:ring-0 px-0 h-7 bg-transparent text-gray-800" placeholder="Document title…"/>
+            {importing&&<span className="text-xs text-blue-500 animate-pulse">Importing…</span>}
+          </div>
+        )}
+
+        {sel?(
+          <div className="flex-1 overflow-auto" style={{background:"#e8eaed"}}>
+            <style>{`
+              #ld-ed{outline:none;display:flex;flex-direction:column;align-items:center;gap:24px;padding:32px 0 96px 0;}
+              .doc-page{background:#fff;width:${PAGE_WIDTH}px;box-shadow:0 1px 8px rgba(0,0,0,0.18);box-sizing:border-box;flex-shrink:0;}
+              .doc-page-text{min-height:${PAGE_MIN_HEIGHT}px;padding:96px;outline:none;font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.15;color:#000;}
+              .doc-page-text:empty:before{content:"Start typing here…";color:#9ca3af;pointer-events:none;}
+              .doc-page-docximport{width:auto;background:transparent;box-shadow:none;padding:0;min-height:0;overflow:visible;}
+              #ld-ed .doc-page-text h1{font-size:20pt;font-weight:700;margin:.3em 0;}
+              #ld-ed .doc-page-text h2{font-size:16pt;font-weight:700;margin:.3em 0;}
+              #ld-ed .doc-page-text h3{font-size:13pt;font-weight:600;margin:.3em 0;}
+              #ld-ed .doc-page-text blockquote{border-left:3px solid #ccc;padding:3px 12px;color:#555;margin:4px 0;}
+              #ld-ed .doc-page-text pre{background:#f5f5f5;padding:10px;border-radius:4px;font-family:monospace;font-size:.85em;overflow-x:auto;}
+              #ld-ed .doc-page-text ul{list-style:disc !important;padding-left:1.5em !important;margin:3px 0;}
+              #ld-ed .doc-page-text ol{list-style:decimal !important;padding-left:1.5em !important;margin:3px 0;}
+              #ld-ed .doc-page-text li{display:list-item !important;}
+              #ld-ed .doc-page-text table{border-collapse:collapse;width:100%;margin:6px 0;}
+              #ld-ed .doc-page-text td,#ld-ed .doc-page-text th{border:1px solid #999;padding:5px 8px;vertical-align:top;min-width:30px;word-break:break-word;}
+              #ld-ed .doc-page-text th{background:#f0f0f0;font-weight:600;}
+              #ld-ed .doc-page-text img{max-width:100%;height:auto;cursor:pointer;display:block;margin:6px 0;}
+              #ld-ed .doc-page-text img:hover{outline:2px solid #4a86e8;outline-offset:2px;}
+              #ld-ed .doc-page-text a{color:#1155cc;text-decoration:underline;}
+              #ld-ed .doc-page-text p{margin:0 0 1px 0;min-height:1.15em;}
+              #ld-ed .doc-page-docximport{overflow:visible;display:block;}
+              #ld-ed .doc-page-docximport section{margin-bottom:24px;}
+            `}</style>
+            <div style={{transform:`scale(${pageZoom/100})`,transformOrigin:"top center",transition:"transform 0.1s",display:"flex",justifyContent:"center"}}>
+              <div id="ld-ed" ref={editorRef} contentEditable suppressContentEditableWarning
+                onInput={triggerSave} onKeyUp={updateFmts} onMouseUp={updateFmts}
+                style={{fontFamily,fontSize:fontSize+"pt",lineHeight:"1.15",color:"#000"}}/>
+            </div>
+            <div style={{position:"fixed",bottom:16,right:24,display:"flex",alignItems:"center",gap:6,background:"white",border:"1px solid #d0d0d0",borderRadius:20,padding:"4px 12px",boxShadow:"0 2px 8px rgba(0,0,0,0.15)",zIndex:30}}>
+              <button onClick={()=>setPageZoom(z=>Math.max(25,z-10))} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-600"><ZoomOut className="h-4 w-4"/></button>
+              <input type="range" min={25} max={200} step={5} value={pageZoom} onChange={e=>setPageZoom(Number(e.target.value))} style={{width:100,accentColor:"#4a86e8"}}/>
+              <button onClick={()=>setPageZoom(z=>Math.min(200,z+10))} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-600"><ZoomIn className="h-4 w-4"/></button>
+              <button onClick={()=>setPageZoom(100)} className="text-xs font-medium text-blue-600 hover:text-blue-800 min-w-[36px] text-center">{pageZoom}%</button>
+            </div>
+          </div>
+        ):(
+          <div className="flex-1 flex flex-col items-center justify-center text-center p-8" style={{background:"#e8eaed"}}>
+            <FileText className="h-16 w-16 text-gray-400 mb-4"/>
+            <h2 className="text-xl font-semibold mb-2 text-gray-700">No document selected</h2>
+            <p className="text-gray-500 mb-6 text-sm">Click the blue arrow on the left to open or create documents</p>
+            <div className="flex gap-3 flex-wrap justify-center">
+              <Button onClick={createDoc} className="gap-2"><Plus className="h-4 w-4"/>New Document</Button>
+              <Button variant="outline" className="gap-2" onClick={()=>wordRef.current?.click()}><Upload className="h-4 w-4"/>Import Word</Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
