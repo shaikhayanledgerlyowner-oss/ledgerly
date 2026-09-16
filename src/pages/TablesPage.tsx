@@ -102,57 +102,6 @@ const splitKey=(k:string)=>{const i=k.indexOf("__");return [k.slice(0,i),k.slice
 
 interface Ctx{x:number;y:number;rowId?:string;colId?:string;colName?:string;}
 
-// ── OCR words → proper GRID (column to column, row to row) ───────────────────
-// Sirf text lena kaafi nahi hota (sab ek line me aa jata hai).
-// Isliye har word ki x/y position use kar ke rows aur columns detect karte hain.
-type OcrWord={text:string;x0:number;x1:number;y0:number;y1:number};
-
-const wordsToGrid=(all:OcrWord[]):string[][]=>{
-  const ws=all.filter(w=>w.text&&w.text.trim()!=="");
-  if(!ws.length)return [];
-
-  // median word height — baaki sab thresholds isi par based hain
-  const hs=ws.map(w=>w.y1-w.y0).filter(h=>h>0).sort((a,b)=>a-b);
-  const H=hs[Math.floor(hs.length/2)]||12;
-
-  // ── 1) ROWS: y-center ke hisaab se group ──────────────────────────────────
-  const sorted=[...ws].sort((a,b)=>((a.y0+a.y1)/2)-((b.y0+b.y1)/2));
-  const lines:OcrWord[][]=[];
-  for(const w of sorted){
-    const c=(w.y0+w.y1)/2;
-    const last=lines[lines.length-1];
-    if(last){
-      const lc=last.reduce((s,x)=>s+(x.y0+x.y1)/2,0)/last.length;
-      if(Math.abs(c-lc)<=H*0.6){last.push(w);continue;}
-    }
-    lines.push([w]);
-  }
-
-  // ── 2) COLUMNS: x-axis par jahan bada gap hai wahan column break ─────────
-  const iv=ws.map(w=>[w.x0,w.x1] as [number,number]).sort((a,b)=>a[0]-b[0]);
-  const GAP=H*0.7;                      // isse bada gap = naya column
-  const blocks:[number,number][]=[];
-  for(const [a,b] of iv){
-    const last=blocks[blocks.length-1];
-    if(last&&a<=last[1]+GAP){last[1]=Math.max(last[1],b);}
-    else blocks.push([a,b]);
-  }
-  const bounds:number[]=[];
-  for(let i=1;i<blocks.length;i++)bounds.push((blocks[i-1][1]+blocks[i][0])/2);
-  const nCols=Math.max(1,blocks.length);
-  const colOf=(x:number)=>{let i=0;while(i<bounds.length&&x>bounds[i])i++;return Math.min(i,nCols-1);};
-
-  // ── 3) har word ko uske row+column me daal do ────────────────────────────
-  return lines.map(line=>{
-    const cells:string[]=new Array(nCols).fill("");
-    [...line].sort((a,b)=>a.x0-b.x0).forEach(w=>{
-      const i=colOf((w.x0+w.x1)/2);
-      cells[i]=cells[i]?`${cells[i]} ${w.text.trim()}`:w.text.trim();
-    });
-    return cells;
-  });
-};
-
 // tesseract (OCR) ko CDN se load karte hain — npm install ki zarurat nahi
 const loadTesseract=():Promise<any>=>new Promise((res,rej)=>{
   const w=window as any;
@@ -669,39 +618,15 @@ export default function TablesPage(){
     try{
       setBusy("Scanning image...");
       const T=await loadTesseract();
-      const res=await T.recognize(
-        file,"eng",
-        {logger:(m:any)=>{if(m.status==="recognizing text")setBusy(`Scanning... ${Math.round((m.progress||0)*100)}%`);}},
-        {blocks:true,text:true},           // ✅ word positions chahiye
-      );
-      const data=res?.data??{};
+      const {data}=await T.recognize(file,"eng",{logger:(m:any)=>{
+        if(m.status==="recognizing text")setBusy(`Scanning... ${Math.round((m.progress||0)*100)}%`);
+      }});
       setBusy("");
-
-      // sab words + unke bounding box nikalo
-      const raw:any[]=[];
-      if(Array.isArray(data.words)&&data.words.length)raw.push(...data.words);
-      else if(Array.isArray(data.blocks)){
-        data.blocks.forEach((b:any)=>(b?.paragraphs??[]).forEach((p:any)=>(p?.lines??[]).forEach((l:any)=>(l?.words??[]).forEach((w:any)=>raw.push(w)))));
-      }
-      const words:OcrWord[]=raw
-        .filter(w=>w?.bbox&&String(w.text??"").trim()!=="")
-        .map(w=>({text:String(w.text).trim(),x0:w.bbox.x0,x1:w.bbox.x1,y0:w.bbox.y0,y1:w.bbox.y1}));
-
-      let grid:string[][]=[];
-      if(words.length){
-        grid=wordsToGrid(words);           // ✅ column to column, row to row
-      }else{
-        // fallback: agar positions na mile to text se split
-        const lines=String(data?.text??"").split(/\r?\n/).map((s:string)=>s.trim()).filter(Boolean);
-        grid=lines.map((l:string)=>l.split(/\t|\s{2,}|\s*\|\s*/).map(s=>s.trim()));
-      }
-      if(!grid.length)return toast.error("Image me text nahi mila — saaf aur seedha photo lo");
-
+      const lines:string[]=String(data?.text??"").split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+      if(!lines.length)return toast.error("Image me text nahi mila — saaf photo lo");
+      const grid=lines.map(l=>l.split(/\t|\s{2,}|\s*\|\s*/).map(s=>s.trim()).filter(s=>s!==""));
       const width=Math.max(...grid.map(g=>g.length));
-      await importGrid(
-        grid.map(g=>{const c=[...g];while(c.length<width)c.push("");return c;}),
-        file.name.replace(/\.[^.]+$/,"")||"Scan",
-      );
+      await importGrid(grid.map(g=>{const c=[...g];while(c.length<width)c.push("");return c;}),file.name.replace(/\.[^.]+$/,"")||"Scan");
     }catch(err:any){ setBusy(""); toast.error("Scan fail: "+(err?.message??"OCR load nahi hua")); }
   };
 
