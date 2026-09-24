@@ -301,7 +301,25 @@ export default function TablesPage(){
   };
   const applyStyle=(patch:Partial<CellStyle>)=>{
     if(!selCells.size) return toast.error("Pehle cell select karo");
-    setStyleMap(p=>{const n={...p};selCells.forEach(k=>{n[k]={...(n[k]??{}),...patch};});saveStyles(n);return n;});
+    setStyleMap(p=>{
+      const n={...p};
+      selCells.forEach(k=>{
+        n[k]={...(n[k]??{}),...patch};
+        // ✅ agar header cell select hai (column header par click kiya tha),
+        // to toolbar se laga formatting (align/bold/color) sirf header tak
+        // simit nahi rahegi — poori column (saari row-values) par bhi jayegi.
+        // Isi wajah se pehle "center align" sirf header number par lagta tha,
+        // neeche ki values plain reh jaati thi.
+        if(k.startsWith("HDR__")){
+          const colName=k.slice(5);
+          rowsRef.current.forEach(r=>{
+            const rk=ck(r.id,colName);
+            n[rk]={...(n[rk]??{}),...patch};
+          });
+        }
+      });
+      saveStyles(n);return n;
+    });
   };
 
   // ── table CRUD ────────────────────────────────────────────────────────────
