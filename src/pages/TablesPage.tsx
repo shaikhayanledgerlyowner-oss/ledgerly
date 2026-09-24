@@ -3,7 +3,7 @@ import {
   Plus, Table2, Trash2, Edit3, Search, SortAsc, SortDesc,
   MoreHorizontal, X, Calculator, Download, FileSpreadsheet,
   AlignLeft, AlignCenter, AlignRight, Palette, RefreshCw,
-  ChevronDown, Sigma, Camera, Upload,
+  ChevronDown, Sigma, Upload,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
@@ -102,6 +102,57 @@ const splitKey=(k:string)=>{const i=k.indexOf("__");return [k.slice(0,i),k.slice
 
 interface Ctx{x:number;y:number;rowId?:string;colId?:string;colName?:string;}
 
+// ── OCR words → proper GRID (column to column, row to row) ───────────────────
+// Sirf text lena kaafi nahi hota (sab ek line me aa jata hai).
+// Isliye har word ki x/y position use kar ke rows aur columns detect karte hain.
+type OcrWord={text:string;x0:number;x1:number;y0:number;y1:number};
+
+const wordsToGrid=(all:OcrWord[]):string[][]=>{
+  const ws=all.filter(w=>w.text&&w.text.trim()!=="");
+  if(!ws.length)return [];
+
+  // median word height — baaki sab thresholds isi par based hain
+  const hs=ws.map(w=>w.y1-w.y0).filter(h=>h>0).sort((a,b)=>a-b);
+  const H=hs[Math.floor(hs.length/2)]||12;
+
+  // ── 1) ROWS: y-center ke hisaab se group ──────────────────────────────────
+  const sorted=[...ws].sort((a,b)=>((a.y0+a.y1)/2)-((b.y0+b.y1)/2));
+  const lines:OcrWord[][]=[];
+  for(const w of sorted){
+    const c=(w.y0+w.y1)/2;
+    const last=lines[lines.length-1];
+    if(last){
+      const lc=last.reduce((s,x)=>s+(x.y0+x.y1)/2,0)/last.length;
+      if(Math.abs(c-lc)<=H*0.6){last.push(w);continue;}
+    }
+    lines.push([w]);
+  }
+
+  // ── 2) COLUMNS: x-axis par jahan bada gap hai wahan column break ─────────
+  const iv=ws.map(w=>[w.x0,w.x1] as [number,number]).sort((a,b)=>a[0]-b[0]);
+  const GAP=H*0.7;                      // isse bada gap = naya column
+  const blocks:[number,number][]=[];
+  for(const [a,b] of iv){
+    const last=blocks[blocks.length-1];
+    if(last&&a<=last[1]+GAP){last[1]=Math.max(last[1],b);}
+    else blocks.push([a,b]);
+  }
+  const bounds:number[]=[];
+  for(let i=1;i<blocks.length;i++)bounds.push((blocks[i-1][1]+blocks[i][0])/2);
+  const nCols=Math.max(1,blocks.length);
+  const colOf=(x:number)=>{let i=0;while(i<bounds.length&&x>bounds[i])i++;return Math.min(i,nCols-1);};
+
+  // ── 3) har word ko uske row+column me daal do ────────────────────────────
+  return lines.map(line=>{
+    const cells:string[]=new Array(nCols).fill("");
+    [...line].sort((a,b)=>a.x0-b.x0).forEach(w=>{
+      const i=colOf((w.x0+w.x1)/2);
+      cells[i]=cells[i]?`${cells[i]} ${w.text.trim()}`:w.text.trim();
+    });
+    return cells;
+  });
+};
+
 // tesseract (OCR) ko CDN se load karte hain — npm install ki zarurat nahi
 const loadTesseract=():Promise<any>=>new Promise((res,rej)=>{
   const w=window as any;
@@ -111,6 +162,41 @@ const loadTesseract=():Promise<any>=>new Promise((res,rej)=>{
   s.onload=()=>res((window as any).Tesseract);
   s.onerror=()=>rej(new Error("OCR load fail"));
   document.body.appendChild(s);
+});
+
+// ── image preprocessing: upscale + grayscale + contrast ──────────────────────
+// Chhote/dense invoice-style tables (bahut columns, chhota font) me OCR bahut
+// galat padhta hai agar photo seedha bheja jaye. Isliye pehle image ko bada
+// (kam se kam ~2200px width) aur high-contrast black/white bana dete hain —
+// isse text ke edges saaf ho jate hain aur accuracy kaafi behtar aati hai.
+const preprocessForOCR=(file:File):Promise<Blob>=>new Promise((resolve,reject)=>{
+  const img=new Image();
+  const url=URL.createObjectURL(file);
+  img.onload=()=>{
+    const TARGET_W=2200;
+    const scale=Math.max(1,TARGET_W/img.width);
+    const w=Math.round(img.width*scale),h=Math.round(img.height*scale);
+    const canvas=document.createElement("canvas");
+    canvas.width=w;canvas.height=h;
+    const ctx=canvas.getContext("2d")!;
+    ctx.imageSmoothingEnabled=true;
+    ctx.imageSmoothingQuality="high";
+    ctx.drawImage(img,0,0,w,h);
+
+    // grayscale + contrast stretch (halka sa, taaki thin lines na tootein)
+    const id=ctx.getImageData(0,0,w,h);
+    const d=id.data;
+    for(let i=0;i<d.length;i+=4){
+      const gray=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+      const boosted=Math.min(255,Math.max(0,(gray-128)*1.35+128));
+      d[i]=d[i+1]=d[i+2]=boosted;
+    }
+    ctx.putImageData(id,0,0);
+    URL.revokeObjectURL(url);
+    canvas.toBlob(b=>b?resolve(b):reject(new Error("canvas fail")),"image/png",1);
+  };
+  img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("image load fail"));};
+  img.src=url;
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,8 +234,7 @@ export default function TablesPage(){
   const colsRef=useRef<DbColumn[]>([]);
   const rowsRef=useRef<DbRow[]>([]);
 
-  // file inputs (scan + upload)
-  const camRef=useRef<HTMLInputElement>(null);
+  // file input (upload)
   const upRef=useRef<HTMLInputElement>(null);
 
   // ── drag fill ─────────────────────────────────────────────────────────────
@@ -615,19 +700,56 @@ export default function TablesPage(){
 
   // Image (PNG/JPG) → OCR → grid
   const handleImageFile=async(file:File)=>{
+    let worker:any=null;
     try{
-      setBusy("Scanning image...");
+      setBusy("Preparing image...");
+      const cleanBlob=await preprocessForOCR(file).catch(()=>file); // fail ho to original hi use karo
+
+      setBusy("Loading OCR engine...");
       const T=await loadTesseract();
-      const {data}=await T.recognize(file,"eng",{logger:(m:any)=>{
-        if(m.status==="recognizing text")setBusy(`Scanning... ${Math.round((m.progress||0)*100)}%`);
-      }});
+      worker=await T.createWorker("eng",1,{
+        logger:(m:any)=>{if(m.status==="recognizing text")setBusy(`Scanning... ${Math.round((m.progress||0)*100)}%`);},
+      });
+      // PSM 6 = "uniform block of text" — dense table jaisi photo ke liye
+      // is se columns/rows ke words ko sahi tarike se group karta hai
+      await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
+
+      // ✅ teesra param zaroori hai — isi se har word ka bounding box (x/y position)
+      // wapas milta hai. Iske bina Tesseract poori line ek hi text-blob bana deta
+      // hai aur columns/rows pehchan nahi hote (yahi pichli baar ka bug tha).
+      const {data}=await worker.recognize(cleanBlob,{},{blocks:true,text:true});
+      await worker.terminate();worker=null;
       setBusy("");
-      const lines:string[]=String(data?.text??"").split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-      if(!lines.length)return toast.error("Image me text nahi mila — saaf photo lo");
-      const grid=lines.map(l=>l.split(/\t|\s{2,}|\s*\|\s*/).map(s=>s.trim()).filter(s=>s!==""));
+
+      // sab words + unke bounding box nikalo (naye + purane tesseract.js output shape dono support)
+      const raw:any[]=[];
+      if(Array.isArray(data?.words)&&data.words.length)raw.push(...data.words);
+      else if(Array.isArray(data?.blocks)){
+        data.blocks.forEach((b:any)=>(b?.paragraphs??[]).forEach((p:any)=>(p?.lines??[]).forEach((l:any)=>(l?.words??[]).forEach((w:any)=>raw.push(w)))));
+      }
+      const words:OcrWord[]=raw
+        .filter(w=>w?.bbox&&String(w.text??"").trim()!=="")
+        .map(w=>({text:String(w.text).trim(),x0:w.bbox.x0,x1:w.bbox.x1,y0:w.bbox.y0,y1:w.bbox.y1}));
+
+      let grid:string[][]=[];
+      if(words.length){
+        grid=wordsToGrid(words);           // ✅ column to column, row to row
+      }else{
+        const lines=String(data?.text??"").split(/\r?\n/).map((s:string)=>s.trim()).filter(Boolean);
+        grid=lines.map((l:string)=>l.split(/\t|\s{2,}|\s*\|\s*/).map(s=>s.trim()));
+      }
+      if(!grid.length)return toast.error("Image me text nahi mila — saaf, seedhi aur close-up photo lo");
+
       const width=Math.max(...grid.map(g=>g.length));
-      await importGrid(grid.map(g=>{const c=[...g];while(c.length<width)c.push("");return c;}),file.name.replace(/\.[^.]+$/,"")||"Scan");
-    }catch(err:any){ setBusy(""); toast.error("Scan fail: "+(err?.message??"OCR load nahi hua")); }
+      await importGrid(
+        grid.map(g=>{const c=[...g];while(c.length<width)c.push("");return c;}),
+        file.name.replace(/\.[^.]+$/,"")||"Scan",
+      );
+      toast("Scan hoke aaya — column/row check kar lo, chhoti photos me OCR kabhi thodi galat bhi ho sakti hai",{duration:4000});
+    }catch(err:any){
+      if(worker)try{await worker.terminate();}catch{}
+      setBusy(""); toast.error("Scan fail: "+(err?.message??"OCR load nahi hua"));
+    }
   };
 
   const handleFile=async(f?:File|null)=>{
@@ -700,8 +822,6 @@ export default function TablesPage(){
   return(
     <>
       {/* hidden inputs: camera + upload */}
-      <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden"
-        onChange={e=>{handleFile(e.target.files?.[0]);e.currentTarget.value="";}}/>
       <input ref={upRef} type="file" accept=".xlsx,.xls,.xlsm,.csv,.tsv,image/*" className="hidden"
         onChange={e=>{handleFile(e.target.files?.[0]);e.currentTarget.value="";}}/>
 
@@ -900,9 +1020,7 @@ export default function TablesPage(){
           </Button>
 
           <div className="w-px h-6 bg-border mx-0.5"/>
-          {/* ══ SCAN + UPLOAD ══ */}
-          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1" title="Camera se photo lo"
-            onClick={()=>camRef.current?.click()}><Camera className="w-3.5 h-3.5"/>Scan</Button>
+          {/* ══ UPLOAD (Excel / CSV / Image) ══ */}
           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1" title="Excel / CSV / PNG import"
             onClick={()=>upRef.current?.click()}><Upload className="w-3.5 h-3.5"/>Upload</Button>
 
@@ -968,16 +1086,22 @@ export default function TablesPage(){
                     <div className="flex items-center justify-center text-muted-foreground/30 text-xs h-full">⊞</div>
                   </th>
                   {columns.map((col)=>{
-                    const colSel=rowsRef.current.length>0&&rowsRef.current.every(r=>selCells.has(ck(r.id,col.name)));
-                    const hs=styleMap[hk(col.name)];
+                    const hStyleKey=hk(col.name);
+                    const isHSel=selCells.size===1&&selCells.has(hStyleKey);
+                    const hs=styleMap[hStyleKey];
                     return(
                       <th key={col.id}
-                        className={`border border-[#d0d0d0] h-8 text-xs font-medium select-none relative group transition-colors cursor-pointer ${colSel?"bg-[#cce0ff]":(hs?.bg?"":"bg-[#f2f2f2] dark:bg-muted hover:bg-[#e8e8e8]")}`}
-                        style={{background:!colSel&&hs?.bg?hs.bg:undefined,color:hs?.color}}
-                        onClick={()=>{if(renamingColId!==col.id)selectCol(col.name);}}
-                        onDoubleClick={()=>{setRenamingColId(col.id);setRenamingColVal(col.name);}}
+                        // ✅ ab header ek normal cell jaisa hi behave karta hai:
+                        // single click = select + turant edit (jaisa neeche ki rows me hota hai)
+                        className={`border border-[#d0d0d0] h-8 text-xs font-medium select-none relative group transition-colors cursor-cell ${isHSel?"outline outline-2 outline-[#1a73e8] z-10":"hover:bg-[#e8e8e8]"}`}
+                        style={{background:hs?.bg??"#f2f2f2",color:hs?.color,fontWeight:hs?.bold?"bold":600}}
+                        onClick={()=>{
+                          if(renamingColId===col.id)return;
+                          setSelCells(new Set([hStyleKey]));
+                          setRenamingColId(col.id);setRenamingColVal(col.name);
+                        }}
                         onContextMenu={e=>openCtx(e,undefined,col.id,col.name)}
-                        title="Click = poora column select · Double-click = rename · Right-click = color / delete"
+                        title="Click karke edit karo aur upar toolbar se color/bold lagao • Right-click = poora column select/delete"
                       >
                         {renamingColId===col.id?(
                           <div className="flex items-center gap-1 px-1 h-full" onClick={e=>e.stopPropagation()}>
@@ -988,13 +1112,15 @@ export default function TablesPage(){
                               onChange={e=>setRenamingColVal(e.target.value)}
                               onBlur={()=>updateColumn(col,renamingColVal)}
                               onKeyDown={e=>{
-                                if(e.key==="Enter")updateColumn(col,renamingColVal);
+                                if(e.key==="Enter"){updateColumn(col,renamingColVal);(e.target as HTMLElement).blur();}
                                 if(e.key==="Escape")setRenamingColId(null);
+                                if(e.key==="Tab"){e.preventDefault();updateColumn(col,renamingColVal);const nc=colsRef.current[colsRef.current.findIndex(c=>c.id===col.id)+1];if(nc){setRenamingColId(nc.id);setRenamingColVal(nc.name);setSelCells(new Set([hk(nc.name)]));}}
                               }}
                             />
                           </div>
                         ):(
-                          <div className="flex items-center justify-between px-2 h-full">
+                          <div className="flex items-center justify-between px-2 h-full"
+                            style={{justifyContent:hs?.align==="center"?"center":hs?.align==="right"?"flex-end":"space-between"}}>
                             <span className="truncate">{col.name}</span>
                             <button
                               className="opacity-0 group-hover:opacity-60 p-0.5 rounded hover:bg-white/60 shrink-0"
