@@ -221,6 +221,35 @@ const loadTesseract=():Promise<any>=>new Promise((res,rej)=>{
   document.body.appendChild(s);
 });
 
+// ── ek OCR pass ka result nikalne ke liye ────────────────────────────────────
+const ocrWordsFromResult=(data:any):OcrWord[]=>{
+  const raw:any[]=[];
+  if(Array.isArray(data?.words)&&data.words.length)raw.push(...data.words);
+  else if(Array.isArray(data?.blocks)){
+    data.blocks.forEach((b:any)=>(b?.paragraphs??[]).forEach((p:any)=>(p?.lines??[]).forEach((l:any)=>(l?.words??[]).forEach((w:any)=>raw.push(w)))));
+  }
+  return raw.filter(w=>w?.bbox&&String(w.text??"").trim()!=="")
+    .map(w=>({text:String(w.text).trim(),x0:w.bbox.x0,x1:w.bbox.x1,y0:w.bbox.y0,y1:w.bbox.y1}));
+};
+
+// ✅ NAYA: header row aksar OCR me miss ho jaata hai kyunki header ka font/weight
+// data rows se alag hota hai, aur "PSM 6 — uniform block" mode isko poori tarah
+// hi drop kar deta hai (galat padhta nahi, PADTA HI NAHI). Isiliye single pass
+// kaafi nahi — hum poori image do alag layout-mode (PSM 6 aur PSM 4) me padhte
+// hain aur dono ke words ko merge karte hain. Jo bhi word ek pass me miss ho
+// jaye, dusre pass me mil jaata hai — isse header row wapas aa jaati hai.
+const overlaps=(p:OcrWord,q:OcrWord)=>{
+  const ox=Math.max(0,Math.min(p.x1,q.x1)-Math.max(p.x0,q.x0));
+  const oy=Math.max(0,Math.min(p.y1,q.y1)-Math.max(p.y0,q.y0));
+  const areaP=Math.max(1,(p.x1-p.x0)*(p.y1-p.y0));
+  return (ox*oy)/areaP>0.5;
+};
+const mergeWords=(a:OcrWord[],b:OcrWord[]):OcrWord[]=>{
+  const out=[...a];
+  b.forEach(w=>{ if(!out.some(o=>overlaps(o,w)||overlaps(w,o))) out.push(w); });
+  return out;
+};
+
 // ── image preprocessing ──────────────────────────────────────────────────────
 // ✅ NAYA: gehre (dark blue) header band me SAFED text hota hai. Tesseract ko
 // "safed background par kaala text" chahiye, isliye pehle wo header ka band
@@ -887,7 +916,7 @@ export default function TablesPage(){
     }catch(err:any){ setBusy(""); toast.error("Excel read fail: "+err.message); }
   };
 
-  // Image (PNG/JPG) → OCR → grid
+  // Image (PNG/JPG) → OCR (2-pass merge) → grid
   const handleImageFile=async(file:File)=>{
     let worker:any=null;
     try{
@@ -899,26 +928,31 @@ export default function TablesPage(){
       worker=await T.createWorker("eng",1,{
         logger:(m:any)=>{if(m.status==="recognizing text")setBusy(`Scanning... ${Math.round((m.progress||0)*100)}%`);},
       });
-      await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1",user_defined_dpi:"300"});
 
-      const {data}=await worker.recognize(cleanBlob,{},{blocks:true,text:true});
+      // ── PASS 1: PSM 6 (uniform block) — data rows ke liye sabse accurate ──
+      await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1",user_defined_dpi:"300"});
+      setBusy("Scanning table...");
+      const res1=await worker.recognize(cleanBlob,{},{blocks:true,text:true});
+      const wordsA=ocrWordsFromResult(res1.data);
+      const fallbackText=String(res1.data?.text??"");
+
+      // ── PASS 2: PSM 4 (variable-size column blocks) — header row aksar isi
+      // pass me pakdi jaati hai jab wo pass 1 me poori chhoot jaati hai ──
+      await worker.setParameters({tessedit_pageseg_mode:"4",preserve_interword_spaces:"1",user_defined_dpi:"300"});
+      setBusy("Scanning headers...");
+      const res2=await worker.recognize(cleanBlob,{},{blocks:true,text:true});
+      const wordsB=ocrWordsFromResult(res2.data);
+
       await worker.terminate();worker=null;
       setBusy("");
 
-      const raw:any[]=[];
-      if(Array.isArray(data?.words)&&data.words.length)raw.push(...data.words);
-      else if(Array.isArray(data?.blocks)){
-        data.blocks.forEach((b:any)=>(b?.paragraphs??[]).forEach((p:any)=>(p?.lines??[]).forEach((l:any)=>(l?.words??[]).forEach((w:any)=>raw.push(w)))));
-      }
-      const words:OcrWord[]=raw
-        .filter(w=>w?.bbox&&String(w.text??"").trim()!=="")
-        .map(w=>({text:String(w.text).trim(),x0:w.bbox.x0,x1:w.bbox.x1,y0:w.bbox.y0,y1:w.bbox.y1}));
+      const words=mergeWords(wordsA,wordsB);         // ✅ dono pass ke words milake
 
       let grid:string[][]=[];
       if(words.length){
         grid=wordsToGrid(words);
       }else{
-        const lines=String(data?.text??"").split(/\r?\n/).map((s:string)=>s.trim()).filter(Boolean);
+        const lines=fallbackText.split(/\r?\n/).map((s:string)=>s.trim()).filter(Boolean);
         grid=lines.map((l:string)=>l.split(/\t|\s{2,}|\s*\|\s*/).map(s=>s.trim()));
       }
       if(!grid.length)return toast.error("Image me text nahi mila — saaf, seedhi aur close-up photo lo");
