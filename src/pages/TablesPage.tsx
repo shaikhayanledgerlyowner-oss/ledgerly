@@ -25,6 +25,7 @@ import { toast } from "sonner";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 
 interface DbTable  { id:string; user_id:string; name:string; created_at:string; }
@@ -38,6 +39,14 @@ type StyleMap = Record<string,CellStyle>;
 // NOTE: sheet "plain text" hai — jo type karoge wahi dikhega (Excel jaisa).
 
 const safeFile=(n:string)=>String(n||"table").replace(/[\/\\:*?"<>|]/g,"-").trim()||"table";
+
+// #rrggbb → ExcelJS ka ARGB format (FF + hex). Missing/invalid par undefined.
+const argb=(hex?:string):string|undefined=>{
+  if(!hex)return undefined;
+  const h=hex.replace("#","").trim();
+  return /^[0-9a-fA-F]{6}$/.test(h)?("FF"+h.toUpperCase()):undefined;
+};
+const THIN_BORDER={style:"thin" as const,color:{argb:"FFD1D5DB"}};
 
 const parseNum=(v:any):number|null=>{
   if(v==null) return null;
@@ -994,47 +1003,71 @@ export default function TablesPage(){
     doc.save(`${safeFile(selTable.name)}.pdf`);toast.success("PDF downloaded");
   };
 
-  const dlExcel=()=>{
+  // ✅ FIX: purani "xlsx" library sirf PADH sakti hai, koi bhi COLOR/BOLD/MERGE
+  // likh nahi sakti (free version me writing-styles support hi nahi hai) —
+  // isliye pehle jo bhi color/bold set karte the wo Excel me khul ke gayab ho
+  // jaata tha. Ab "exceljs" use kar rahe hain jo asli formatting file me likhti
+  // hai — title poori width me merge hokar bade bold text + tumhare diye hue
+  // color ke saath aayega, header row bold + grey background, aur har cell
+  // apna color/bold/align sahi se le kar aayega.
+  const dlExcel=async()=>{
     if(!hasAccess)return toast.error("Upgrade to download");
     if(!selTable||!columns.length)return;
+
     const title=styleMap[META_TITLE]?.text?.trim()||"";
-    const off=title?1:0;                             // title row ke liye 1 row ka offset
-    const header=columns.map(c=>c.name);
-    const data=filtered.map(r=>columns.map(c=>{
-      const v=r.row_data[c.name];
-      if(v==null||v==="")return "";
-      const n=parseNum(v);
-      return n!==null&&/^[₹$]?\s*-?[\d,]+(\.\d+)?$/.test(String(v).trim())?n:String(v);
-    }));
-    const aoa=title?[[title],header,...data]:[header,...data];
-    const ws=XLSX.utils.aoa_to_sheet(aoa);
-    if(title)(ws as any)["!merges"]=[{s:{r:0,c:0},e:{r:0,c:Math.max(columns.length-1,0)}}];
-    const range=XLSX.utils.decode_range(ws["!ref"]||"A1");
     const ts=styleMap[META_TITLE];
-    for(let ri=0;ri<=range.e.r;ri++)for(let ci=0;ci<=range.e.c;ci++){
-      const addr=XLSX.utils.encode_cell({r:ri,c:ci});if(!ws[addr])continue;
-      if(ri<off){
-        ws[addr].s={
-          font:{bold:ts?.bold!==false,sz:16,color:{rgb:ts?.color?ts.color.replace("#",""):"000000"}},
-          fill:{patternType:"solid",fgColor:{rgb:ts?.bg?ts.bg.replace("#",""):"FFFFFF"}},
-          alignment:{horizontal:ts?.align??"left",vertical:"center"},
-        };
-        continue;
-      }
-      const rr=ri-off;
-      const co=columns[ci];
-      const isH=rr===0;
-      const cs=isH?(co?styleMap[hk(co.name)]:undefined):(()=>{const ro=filtered[rr-1];return ro&&co?styleMap[ck(ro.id,co.name)]:undefined;})();
-      ws[addr].s={
-        fill:{patternType:"solid",fgColor:{rgb:cs?.bg?cs.bg.replace("#",""):(isH?"F2F2F2":"FFFFFF")}},
-        font:{bold:isH||(cs?.bold??false),color:{rgb:cs?.color?cs.color.replace("#",""):"000000"}},
-        alignment:{horizontal:cs?.align??"left",vertical:"center"},
-        border:{top:{style:"thin",color:{rgb:"D1D5DB"}},bottom:{style:"thin",color:{rgb:"D1D5DB"}},left:{style:"thin",color:{rgb:"D1D5DB"}},right:{style:"thin",color:{rgb:"D1D5DB"}}},
-      };
+    const nCols=columns.length;
+
+    const wb=new ExcelJS.Workbook();
+    const ws=wb.addWorksheet("Sheet1");
+    let r=1;
+
+    if(title){
+      ws.mergeCells(1,1,1,nCols);
+      const cell=ws.getCell(1,1);
+      cell.value=title;
+      cell.font={bold:ts?.bold!==false,size:16,color:{argb:argb(ts?.color)??"FF000000"}};
+      cell.alignment={horizontal:(ts?.align as any)??"center",vertical:"middle"};
+      if(argb(ts?.bg))cell.fill={type:"pattern",pattern:"solid",fgColor:{argb:argb(ts!.bg)!}};
+      ws.getRow(1).height=26;
+      r=2;
     }
-    (ws as any)["!cols"]=header.map((_,i)=>({wch:Math.min(Math.max(...[header[i].length,...data.map(row=>String(row[i]??"").length)])+2,40)}));
-    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Sheet1");
-    saveAs(new Blob([XLSX.write(wb,{bookType:"xlsx",type:"array",cellStyles:true})],{type:"application/octet-stream"}),`${safeFile(selTable.name)}.xlsx`);
+
+    const headerRow=r;
+    columns.forEach((col,ci)=>{
+      const hs=styleMap[hk(col.name)];
+      const cell=ws.getCell(headerRow,ci+1);
+      cell.value=col.name;
+      cell.font={bold:true,color:{argb:argb(hs?.color)??"FF000000"}};
+      cell.alignment={horizontal:(hs?.align as any)??"left",vertical:"middle"};
+      cell.fill={type:"pattern",pattern:"solid",fgColor:{argb:argb(hs?.bg)??"FFF2F2F2"}};
+      cell.border={top:THIN_BORDER,bottom:THIN_BORDER,left:THIN_BORDER,right:THIN_BORDER};
+    });
+    r++;
+
+    filtered.forEach(row=>{
+      columns.forEach((col,ci)=>{
+        const raw=row.row_data[col.name];
+        const cs=styleMap[ck(row.id,col.name)];
+        const cell=ws.getCell(r,ci+1);
+        const n=parseNum(raw);
+        const isNumeric=raw!=null&&raw!==""&&n!==null&&/^[₹$]?\s*-?[\d,]+(\.\d+)?$/.test(String(raw).trim());
+        cell.value=isNumeric?n:(raw==null?"":String(raw));
+        cell.font={bold:!!cs?.bold,color:{argb:argb(cs?.color)??"FF000000"}};
+        cell.alignment={horizontal:(cs?.align as any)??"left",vertical:"middle"};
+        if(argb(cs?.bg))cell.fill={type:"pattern",pattern:"solid",fgColor:{argb:argb(cs!.bg)!}};
+        cell.border={top:THIN_BORDER,bottom:THIN_BORDER,left:THIN_BORDER,right:THIN_BORDER};
+      });
+      r++;
+    });
+
+    columns.forEach((c,ci)=>{
+      const maxLen=Math.max(c.name.length,...filtered.map(row=>String(row.row_data[c.name]??"").length));
+      ws.getColumn(ci+1).width=Math.min(maxLen+2,40);
+    });
+
+    const buf=await wb.xlsx.writeBuffer();
+    saveAs(new Blob([buf],{type:"application/octet-stream"}),`${safeFile(selTable.name)}.xlsx`);
     toast.success("Excel downloaded");
   };
 
