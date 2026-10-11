@@ -131,6 +131,27 @@ function drawPieChart(canvas: HTMLCanvasElement, chartRows: Record<string,any>[]
   });
 }
 
+// ✅ NAYA: same x-label (jaise same date) ki multiple rows ko ek bar/slice me
+// jod deta hai — isse bar/pie chart saaf dikhta hai (pehle "01/03/2026" jaisi
+// date 4 alag bars/slices me bikhri hui thi, ab ek hi me total aayega).
+// Data Table (neeche wali detail table) phir bhi har row alag se dikhati hai.
+function aggregateByName(rows: Record<string, any>[], amtCols: { name: string }[]) {
+  const order: string[] = [];
+  const map = new Map<string, Record<string, any>>();
+  rows.forEach(r => {
+    const key = String(r.name);
+    if (!map.has(key)) {
+      const entry: Record<string, any> = { name: key };
+      amtCols.forEach(c => (entry[c.name] = 0));
+      map.set(key, entry);
+      order.push(key);
+    }
+    const entry = map.get(key)!;
+    amtCols.forEach(c => (entry[c.name] += toNum(r[c.name])));
+  });
+  return order.map(k => map.get(k)!);
+}
+
 export default function AnalyticsPage() {
   const { profile, hasAccess, userCurrency } = useAuth();
   const uid = profile?.id;
@@ -176,10 +197,21 @@ export default function AnalyticsPage() {
       const tCols = columns.filter(c => c.table_id === table.id);
       const amtCols = tCols.filter(c => c.type === "amount");
       if (!amtCols.length) return null;
-      const tRows = rows.filter(r => r.table_id === table.id);
+
+      // ✅ FIX: "+Add Row" se bani bilkul khaali rows (koi bhi column me kuch nahi
+      // likha) ko hata do — pehle ye "Row 11", "Row 12"... bankar chart aur
+      // stats dono me ghost entries ki tarah aa rahi thi.
+      const tRowsAll = rows.filter(r => r.table_id === table.id);
+      const tRows = tRowsAll.filter(r =>
+        tCols.some(c => {
+          const v = r.row_data?.[c.name];
+          return v !== null && v !== undefined && String(v).trim() !== "";
+        })
+      );
       if (!tRows.length) return null;
+
       const xCol = xAxisMap[table.id] ?? "";
-      const chartRows = tRows.map((r, i) => {
+      const rawChartRows = tRows.map((r, i) => {
         const raw = xCol ? r.row_data[xCol] : null;
         const xVal = raw != null && raw !== ""
           ? (tCols.find(c => c.name === xCol)?.type === "date" ? toDMY(String(raw)) : String(raw))
@@ -188,14 +220,19 @@ export default function AnalyticsPage() {
         amtCols.forEach(c => { entry[c.name] = toNum(r.row_data[c.name]); });
         return entry;
       });
+
+      // Detail table: har row alag dikhti hai. Bar/Pie/Line chart: same x-label
+      // (jaise same date) ki entries jodkar ek clean total bar/slice ban jaata hai.
+      const chartRows = aggregateByName(rawChartRows, amtCols);
+
       const stats = amtCols.map(col => {
         const vals = tRows.map(r => toNum(r.row_data[col.name]));
         const total = vals.reduce((a, b) => a + b, 0);
         const nz = vals.filter(v => v > 0);
         return { col, total, avg: nz.length ? total / nz.length : 0, max: Math.max(...vals), min: nz.length ? Math.min(...nz) : 0, count: nz.length };
       });
-      return { table, tCols, amtCols, chartRows, stats, xCol };
-    }).filter(Boolean) as { table: DbTable; tCols: DbColumn[]; amtCols: DbColumn[]; chartRows: Record<string,any>[]; stats: { col: DbColumn; total: number; avg: number; max: number; min: number; count: number }[]; xCol: string }[];
+      return { table, tCols, amtCols, chartRows, detailRows: rawChartRows, stats, xCol };
+    }).filter(Boolean) as { table: DbTable; tCols: DbColumn[]; amtCols: DbColumn[]; chartRows: Record<string,any>[]; detailRows: Record<string,any>[]; stats: { col: DbColumn; total: number; avg: number; max: number; min: number; count: number }[]; xCol: string }[];
   }, [tables, columns, rows, xAxisMap]);
 
   // ── Beautiful PDF ──────────────────────────────────────────────────────────
@@ -288,12 +325,12 @@ export default function AnalyticsPage() {
 
     y += chartH + 34;
 
-    // ── Data Table ──
+    // ── Data Table (har row alag — detail view) ──
     doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(15, 23, 42);
     doc.text("Detailed Data", 24, y); y += 6;
 
     const head = [[pd.xCol || "Row", ...pd.amtCols.map(c => c.name)]];
-    const body = pd.chartRows.map(r => [r.name, ...pd.amtCols.map(c => formatCurrencyPDF(r[c.name] ?? 0, cur))]);
+    const body = pd.detailRows.map(r => [r.name, ...pd.amtCols.map(c => formatCurrencyPDF(r[c.name] ?? 0, cur))]);
     const totalRow = ["TOTAL", ...pd.stats.map(s => formatCurrencyPDF(s.total, cur))];
 
     autoTable(doc, {
@@ -467,6 +504,9 @@ export default function AnalyticsPage() {
             </SelectContent>
           </Select>
           <span className="text-xs text-muted-foreground">Y-Axis: <strong className="text-foreground">{activePD.amtCols.map(c => c.name).join(", ")}</strong></span>
+          {activePD.chartRows.length !== activePD.detailRows.length && (
+            <span className="text-[11px] text-muted-foreground ml-auto">Charts show {activePD.chartRows.length} grouped points from {activePD.detailRows.length} rows</span>
+          )}
         </div>
 
         {/* ── STAT CARDS ── */}
@@ -516,12 +556,12 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        {/* ── DATA TABLE ── */}
+        {/* ── DATA TABLE — har row alag se (detail view) ── */}
         <div className="bg-card border rounded-2xl overflow-hidden">
           <div className="px-5 py-4 border-b flex items-center justify-between bg-muted/30">
             <div>
               <h3 className="font-semibold text-sm">Data Table</h3>
-              <p className="text-xs text-muted-foreground mt-0.5">{activePD.chartRows.length} rows · {sym} {cur}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{activePD.detailRows.length} rows · {sym} {cur}</p>
             </div>
           </div>
           <div className="overflow-x-auto">
@@ -535,7 +575,7 @@ export default function AnalyticsPage() {
                 </tr>
               </thead>
               <tbody>
-                {activePD.chartRows.map((r, i) => (
+                {activePD.detailRows.map((r, i) => (
                   <tr key={i} className="border-b last:border-0 hover:bg-muted/20 transition-colors">
                     <td className="px-5 py-3 font-medium text-sm">{r.name}</td>
                     {activePD.amtCols.map(c => (
