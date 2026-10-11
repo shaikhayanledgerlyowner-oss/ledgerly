@@ -7,7 +7,7 @@ import {
   ResponsiveContainer, ComposedChart,
 } from "recharts";
 import {
-  TrendingUp, IndianRupee, Download, Table2,
+  TrendingUp, IndianRupee, Download, Table2, FileText,
   BarChart2, PieChart as PieIcon, LayoutDashboard,
   ArrowUpRight, ArrowDownRight, Minus,
 } from "lucide-react";
@@ -15,17 +15,31 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { formatCurrency, formatCurrencyPDF, getCurrencySymbol } from "@/lib/currency";
+import { cn } from "@/lib/utils";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
 interface DbTable  { id: string; name: string; }
 interface DbColumn { id: string; table_id: string; name: string; type: string; }
 interface DbRow    { id: string; table_id: string; row_data: Record<string, any>; created_at: string; }
+interface DbInvoice{ type: string; totals: Record<string, any> | null; created_at: string; status: string; }
 
 const COLORS = ["#3b82f6","#22c55e","#f59e0b","#ef4444","#a855f7","#06b6d4","#f97316","#ec4899","#84cc16","#14b8a6"];
 const toNum = (v: any) => { if (v == null || v === "") return 0; const n = Number(String(v).replace(/,/g, "")); return isFinite(n) ? n : 0; };
+function toNumberSafe(v: any): number {
+  if (v === null || v === undefined || v === "") return 0;
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  const n = Number(String(v).replace(/[₹,\s]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+}
+function dayKey(dateStr: string) {
+  const d = new Date(dateStr);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
 function toDMY(iso: string) { if (!iso) return ""; const d = new Date(iso + "T00:00:00"); if (isNaN(d.getTime())) return iso; return `${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}/${d.getFullYear()}`; }
 type ChartMode = "bar" | "line" | "pie" | "composed";
+type ViewMode = "tables" | "documents";
+type DocTypeFilter = "all" | "invoice" | "quotation" | "bill";
 
 const CustomTooltip = ({ active, payload, label, cur }: any) => {
   if (!active || !payload?.length) return null;
@@ -45,6 +59,20 @@ const CustomTooltip = ({ active, payload, label, cur }: any) => {
   );
 };
 
+const STATUS_STYLE: Record<string, string> = {
+  paid: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  complete: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  completed: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  pending: "bg-amber-50 text-amber-700 border-amber-200",
+  draft: "bg-gray-100 text-gray-600 border-gray-200",
+  overdue: "bg-red-50 text-red-700 border-red-200",
+  cancelled: "bg-red-50 text-red-700 border-red-200",
+};
+function StatusPill({ label }: { label: string }) {
+  const cls = STATUS_STYLE[(label || "").toLowerCase()] ?? "bg-blue-50 text-blue-700 border-blue-200";
+  return <span className={cn("inline-block px-2.5 py-0.5 rounded-full text-[11px] font-medium border capitalize", cls)}>{label || "unknown"}</span>;
+}
+
 // ── Canvas chart renderers for PDF ──────────────────────────────────────────
 function drawBarChart(canvas: HTMLCanvasElement, chartRows: Record<string,any>[], amtCol: string, cur: string) {
   const ctx = canvas.getContext("2d")!;
@@ -59,7 +87,6 @@ function drawBarChart(canvas: HTMLCanvasElement, chartRows: Record<string,any>[]
   const chartW = W - pad.left - pad.right;
   const barW = Math.min(44, chartW / chartRows.length - 8);
 
-  // Y grid lines
   [0, 0.25, 0.5, 0.75, 1].forEach(f => {
     const y = pad.top + chartH * (1 - f);
     ctx.strokeStyle = f === 0 ? "#e5e7eb" : "#f3f4f6";
@@ -69,7 +96,6 @@ function drawBarChart(canvas: HTMLCanvasElement, chartRows: Record<string,any>[]
     ctx.fillText(formatCurrencyPDF(maxV * f, cur).replace(/\.00$/, ""), pad.left - 8, y + 4);
   });
 
-  // Bars with gradient
   chartRows.forEach((r, i) => {
     const x = pad.left + i * (chartW / chartRows.length) + (chartW / chartRows.length - barW) / 2;
     const barH = (toNum(r[amtCol]) / maxV) * chartH;
@@ -81,10 +107,8 @@ function drawBarChart(canvas: HTMLCanvasElement, chartRows: Record<string,any>[]
     ctx.beginPath();
     if (typeof (ctx as any).roundRect === "function") { (ctx as any).roundRect(x, y, barW, barH, 4); } else { ctx.rect(x, y, barW, barH); }
     ctx.fill();
-    // value on top
     ctx.fillStyle = "#374151"; ctx.font = "bold 9px Arial"; ctx.textAlign = "center";
     if (barH > 16) ctx.fillText(formatCurrencyPDF(toNum(r[amtCol]), cur).replace(/\.00$/, ""), x + barW / 2, y - 5);
-    // x label
     ctx.fillStyle = "#6b7280"; ctx.font = "9px Arial";
     ctx.fillText(String(r.name).slice(0, 10), x + barW / 2, H - pad.bottom + 16);
   });
@@ -109,17 +133,14 @@ function drawPieChart(canvas: HTMLCanvasElement, chartRows: Record<string,any>[]
     startAngle += slice;
   });
 
-  // Donut hole
   ctx.beginPath(); ctx.arc(cx, cy, innerR, 0, 2 * Math.PI);
   ctx.fillStyle = "#fff"; ctx.fill();
 
-  // Center label
   ctx.fillStyle = "#374151"; ctx.font = "bold 11px Arial"; ctx.textAlign = "center";
   ctx.fillText("Total", cx, cy - 4);
   ctx.font = "bold 10px Arial"; ctx.fillStyle = "#111827";
   ctx.fillText(String(data.length) + " items", cx, cy + 12);
 
-  // Legend
   const legendX = W * 0.68, legendY = H * 0.1;
   data.slice(0, 9).forEach((d, i) => {
     const y = legendY + i * 20;
@@ -131,10 +152,8 @@ function drawPieChart(canvas: HTMLCanvasElement, chartRows: Record<string,any>[]
   });
 }
 
-// ✅ NAYA: same x-label (jaise same date) ki multiple rows ko ek bar/slice me
-// jod deta hai — isse bar/pie chart saaf dikhta hai (pehle "01/03/2026" jaisi
-// date 4 alag bars/slices me bikhri hui thi, ab ek hi me total aayega).
-// Data Table (neeche wali detail table) phir bhi har row alag se dikhati hai.
+// ✅ same x-label (jaise same date) ki multiple rows ko ek bar/slice me jod
+// deta hai — chart saaf rehta hai. Data Table (detail view) alag rehti hai.
 function aggregateByName(rows: Record<string, any>[], amtCols: { name: string }[]) {
   const order: string[] = [];
   const map = new Map<string, Record<string, any>>();
@@ -152,6 +171,13 @@ function aggregateByName(rows: Record<string, any>[], amtCols: { name: string }[
   return order.map(k => map.get(k)!);
 }
 
+type Pivot = {
+  table: DbTable; tCols: DbColumn[]; amtCols: DbColumn[];
+  chartRows: Record<string,any>[]; detailRows: Record<string,any>[];
+  stats: { col: DbColumn; total: number; avg: number; max: number; min: number; count: number }[];
+  xCol: string;
+};
+
 export default function AnalyticsPage() {
   const { profile, hasAccess, userCurrency } = useAuth();
   const uid = profile?.id;
@@ -160,47 +186,57 @@ export default function AnalyticsPage() {
   const [tables, setTables] = useState<DbTable[]>([]);
   const [columns, setColumns] = useState<DbColumn[]>([]);
   const [rows, setRows] = useState<DbRow[]>([]);
+  const [invoices, setInvoices] = useState<DbInvoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [xAxisMap, setXAxisMap] = useState<Record<string, string>>({});
   const [chartMode, setChartMode] = useState<ChartMode>("bar");
   const [activeTable, setActiveTable] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("tables");
+  const [docTypeFilter, setDocTypeFilter] = useState<DocTypeFilter>("all");
 
   useEffect(() => {
     if (!uid) return;
     (async () => {
       setLoading(true);
-      const { data: tbls } = await supabase.from("user_tables").select("id,name").eq("user_id", uid);
-      const tableList = (tbls ?? []) as DbTable[];
+      const [tblsRes, invRes] = await Promise.all([
+        supabase.from("user_tables").select("id,name").eq("user_id", uid),
+        supabase.from("invoices").select("type, totals, created_at, status").eq("user_id", uid),
+      ]);
+      const tableList = (tblsRes.data ?? []) as DbTable[];
       setTables(tableList);
-      if (!tableList.length) { setLoading(false); return; }
-      const ids = tableList.map(t => t.id);
-      const { data: cols } = await supabase.from("user_columns").select("*").in("table_id", ids);
-      const allCols = (cols ?? []) as DbColumn[];
-      setColumns(allCols);
-      const amtTids = [...new Set(allCols.filter(c => c.type === "amount").map(c => c.table_id))];
-      if (!amtTids.length) { setLoading(false); return; }
-      const { data: rowData } = await supabase.from("user_rows").select("*").in("table_id", amtTids).order("created_at");
-      setRows(((rowData ?? []) as DbRow[]).map(r => ({ ...r, row_data: r.row_data ?? {} })));
-      const map: Record<string, string> = {};
-      amtTids.forEach(tid => {
-        const tCols = allCols.filter(c => c.table_id === tid);
-        map[tid] = (tCols.find(c => c.type === "date") || tCols.find(c => c.type === "text") || tCols[0])?.name ?? "";
-      });
-      setXAxisMap(map);
-      setActiveTable(amtTids[0]);
+      setInvoices((invRes.data ?? []) as DbInvoice[]);
+
+      if (tableList.length) {
+        const ids = tableList.map(t => t.id);
+        const { data: cols } = await supabase.from("user_columns").select("*").in("table_id", ids);
+        const allCols = (cols ?? []) as DbColumn[];
+        setColumns(allCols);
+        const amtTids = [...new Set(allCols.filter(c => c.type === "amount").map(c => c.table_id))];
+        if (amtTids.length) {
+          const { data: rowData } = await supabase.from("user_rows").select("*").in("table_id", amtTids).order("created_at");
+          setRows(((rowData ?? []) as DbRow[]).map(r => ({ ...r, row_data: r.row_data ?? {} })));
+          const map: Record<string, string> = {};
+          amtTids.forEach(tid => {
+            const tCols = allCols.filter(c => c.table_id === tid);
+            map[tid] = (tCols.find(c => c.type === "date") || tCols.find(c => c.type === "text") || tCols[0])?.name ?? "";
+          });
+          setXAxisMap(map);
+          setActiveTable(amtTids[0]);
+        }
+      }
       setLoading(false);
     })();
   }, [uid]);
 
-  const pivotData = useMemo(() => {
+  // ── Tables mode: ek pivot per table (jin me Amount column hai) ────────────
+  const pivotData = useMemo((): Pivot[] => {
     return tables.map(table => {
       const tCols = columns.filter(c => c.table_id === table.id);
       const amtCols = tCols.filter(c => c.type === "amount");
       if (!amtCols.length) return null;
 
-      // ✅ FIX: "+Add Row" se bani bilkul khaali rows (koi bhi column me kuch nahi
-      // likha) ko hata do — pehle ye "Row 11", "Row 12"... bankar chart aur
-      // stats dono me ghost entries ki tarah aa rahi thi.
+      // khaali ("+Add Row" se bani) rows hata do — pehle "Row 11,12..." bankar
+      // ghost entries ki tarah chart/stats me aa rahi thi
       const tRowsAll = rows.filter(r => r.table_id === table.id);
       const tRows = tRowsAll.filter(r =>
         tCols.some(c => {
@@ -220,9 +256,6 @@ export default function AnalyticsPage() {
         amtCols.forEach(c => { entry[c.name] = toNum(r.row_data[c.name]); });
         return entry;
       });
-
-      // Detail table: har row alag dikhti hai. Bar/Pie/Line chart: same x-label
-      // (jaise same date) ki entries jodkar ek clean total bar/slice ban jaata hai.
       const chartRows = aggregateByName(rawChartRows, amtCols);
 
       const stats = amtCols.map(col => {
@@ -232,13 +265,46 @@ export default function AnalyticsPage() {
         return { col, total, avg: nz.length ? total / nz.length : 0, max: Math.max(...vals), min: nz.length ? Math.min(...nz) : 0, count: nz.length };
       });
       return { table, tCols, amtCols, chartRows, detailRows: rawChartRows, stats, xCol };
-    }).filter(Boolean) as { table: DbTable; tCols: DbColumn[]; amtCols: DbColumn[]; chartRows: Record<string,any>[]; detailRows: Record<string,any>[]; stats: { col: DbColumn; total: number; avg: number; max: number; min: number; count: number }[]; xCol: string }[];
+    }).filter(Boolean) as Pivot[];
   }, [tables, columns, rows, xAxisMap]);
 
+  // ── Documents mode: Invoices/Quotations/Bills ko Amount ki tarah treat karo ─
+  const DOC_LABELS: Record<DocTypeFilter, string> = { all: "All Documents", invoice: "Invoices", quotation: "Quotations", bill: "Bills" };
+  const docTypeCounts = useMemo(() => {
+    const c = { invoice: 0, quotation: 0, bill: 0 };
+    invoices.forEach(inv => {
+      const t = String(inv.type || "").toLowerCase();
+      if (t === "invoice") c.invoice++; else if (t === "quotation") c.quotation++; else if (t === "bill") c.bill++;
+    });
+    return c;
+  }, [invoices]);
+
+  const docPivot = useMemo((): Pivot | null => {
+    const filtered = invoices.filter(inv => docTypeFilter === "all" ? true : String(inv.type || "").toLowerCase() === docTypeFilter);
+    if (!filtered.length) return null;
+
+    const dayMap: Record<string, number> = {};
+    const detailRows: Record<string, any>[] = [];
+    filtered.forEach(inv => {
+      const amt = toNumberSafe(inv.totals?.grandTotal ?? inv.totals?.grand_total ?? inv.totals?.total ?? 0);
+      const dk = dayKey(inv.created_at);
+      dayMap[dk] = (dayMap[dk] ?? 0) + amt;
+      detailRows.push({ name: toDMY(dk), Amount: amt, type: inv.type, status: inv.status });
+    });
+
+    const chartRows = Object.entries(dayMap).sort((a, b) => a[0] > b[0] ? 1 : -1).map(([k, v]) => ({ name: toDMY(k), Amount: v }));
+    const vals = filtered.map(inv => toNumberSafe(inv.totals?.grandTotal ?? inv.totals?.grand_total ?? inv.totals?.total ?? 0));
+    const total = vals.reduce((a, b) => a + b, 0);
+    const nz = vals.filter(v => v > 0);
+    const amtCols: DbColumn[] = [{ id: "amount", table_id: "documents", name: "Amount", type: "amount" }];
+    const stats = [{ col: amtCols[0], total, avg: nz.length ? total / nz.length : 0, max: Math.max(...vals, 0), min: nz.length ? Math.min(...nz) : 0, count: nz.length }];
+    const table: DbTable = { id: "documents", name: DOC_LABELS[docTypeFilter] };
+    return { table, tCols: amtCols, amtCols, chartRows, detailRows, stats, xCol: "Date" };
+  }, [invoices, docTypeFilter]);
+
   // ── Beautiful PDF ──────────────────────────────────────────────────────────
-  const dlPDF = async () => {
+  const dlPDF = async (pd: Pivot | null) => {
     if (!hasAccess) return toast.error("Upgrade to download analytics");
-    const pd = pivotData.find(p => p.table.id === activeTable) || pivotData[0];
     if (!pd) return toast.error("No data to export");
 
     const barC = document.createElement("canvas"); barC.width = 600; barC.height = 240;
@@ -252,11 +318,8 @@ export default function AnalyticsPage() {
     const pw = doc.internal.pageSize.width;
     const ph = doc.internal.pageSize.height;
 
-    // ── Header band ──
     doc.setFillColor(15, 23, 42);
     doc.rect(0, 0, pw, 56, "F");
-
-    // Accent stripe
     doc.setFillColor(59, 130, 246);
     doc.rect(0, 0, 5, 56, "F");
 
@@ -272,7 +335,6 @@ export default function AnalyticsPage() {
 
     let y = 72;
 
-    // ── Summary Cards ──
     doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(15, 23, 42);
     doc.text("Summary", 24, y); y += 8;
 
@@ -287,17 +349,13 @@ export default function AnalyticsPage() {
       const cw = (pw - 48) / cards.length;
       cards.forEach((c, i) => {
         const x = 24 + i * cw;
-        // Card bg
         doc.setFillColor(248, 250, 252);
         doc.setDrawColor(226, 232, 240);
         doc.roundedRect(x, y, cw - 6, 38, 4, 4, "FD");
-        // Colored top accent
         doc.setFillColor(...c.color);
         doc.roundedRect(x, y, cw - 6, 4, 2, 2, "F");
-        // Label
         doc.setFont("helvetica", "normal"); doc.setFontSize(7); doc.setTextColor(100, 116, 139);
         doc.text(c.l, x + 8, y + 15);
-        // Value
         doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(...c.color);
         doc.text(c.v, x + 8, y + 29);
       });
@@ -306,12 +364,10 @@ export default function AnalyticsPage() {
 
     y += 6;
 
-    // ── Charts ──
     doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(15, 23, 42);
     const chartW = (pw - 56) / 2;
     const chartH = 148;
 
-    // Chart cards bg
     doc.setFillColor(248, 250, 252); doc.setDrawColor(226, 232, 240);
     doc.roundedRect(24, y, chartW, chartH + 24, 6, 6, "FD");
     doc.roundedRect(32 + chartW, y, chartW, chartH + 24, 6, 6, "FD");
@@ -325,7 +381,6 @@ export default function AnalyticsPage() {
 
     y += chartH + 34;
 
-    // ── Data Table (har row alag — detail view) ──
     doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(15, 23, 42);
     doc.text("Detailed Data", 24, y); y += 6;
 
@@ -351,7 +406,6 @@ export default function AnalyticsPage() {
       margin: { left: 24, right: 24 },
     });
 
-    // ── Footer ──
     doc.setFillColor(248, 250, 252);
     doc.rect(0, ph - 22, pw, 22, "F");
     doc.setFont("helvetica", "normal"); doc.setFontSize(7); doc.setTextColor(148, 163, 184);
@@ -361,7 +415,7 @@ export default function AnalyticsPage() {
     toast.success("Analytics PDF downloaded!");
   };
 
-  const renderChart = (pd: typeof pivotData[0], mode: ChartMode) => {
+  const renderChart = (pd: Pivot | null, mode: ChartMode) => {
     if (!pd || !pd.chartRows.length) return null;
     const { chartRows, amtCols } = pd;
     const common = { data: chartRows, margin: { top: 8, right: 24, bottom: 56, left: 16 } };
@@ -430,20 +484,22 @@ export default function AnalyticsPage() {
     </div>
   );
 
-  if (!pivotData.length) return (
+  if (!pivotData.length && !invoices.length) return (
     <div className="flex flex-col items-center justify-center h-64 text-center gap-4">
       <div className="w-20 h-20 rounded-2xl bg-muted/50 flex items-center justify-center">
         <IndianRupee className="w-10 h-10 text-muted-foreground/30" />
       </div>
       <div>
         <h3 className="text-lg font-semibold">No data yet</h3>
-        <p className="text-muted-foreground text-sm mt-1 max-w-xs">Set at least one column type to <strong>Amount (₹)</strong> on the Tables page to see analytics.</p>
+        <p className="text-muted-foreground text-sm mt-1 max-w-xs">Set at least one column type to <strong>Amount (₹)</strong> on the Tables page, or create an invoice/quotation/bill, to see analytics.</p>
       </div>
     </div>
   );
 
-  const activePD = pivotData.find(p => p.table.id === activeTable) || pivotData[0];
   const sym = getCurrencySymbol(cur);
+  const activePD: Pivot | null = viewMode === "documents"
+    ? docPivot
+    : (pivotData.find(p => p.table.id === activeTable) || pivotData[0] || null);
 
   return (
     <div className="space-y-6 pb-10">
@@ -460,7 +516,6 @@ export default function AnalyticsPage() {
           <p className="text-muted-foreground text-sm mt-1">Currency: <strong>{sym} {cur}</strong></p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Chart mode switcher */}
           <div className="flex items-center gap-0.5 bg-muted rounded-xl p-1">
             {([["bar","Bar",BarChart2],["line","Line",TrendingUp],["pie","Pie",PieIcon],["composed","Mixed",LayoutDashboard]] as const).map(([k, label, Icon]) => (
               <button key={k} onClick={() => setChartMode(k as ChartMode)}
@@ -469,45 +524,104 @@ export default function AnalyticsPage() {
               </button>
             ))}
           </div>
-          <Button size="sm" onClick={dlPDF}
+          <Button size="sm" onClick={() => dlPDF(activePD)}
             className="h-9 gap-2 text-xs bg-blue-600 hover:bg-blue-700 text-white">
             <Download className="w-3.5 h-3.5" /> Download PDF
           </Button>
         </div>
       </div>
 
-      {/* ── TABLE TABS ── */}
-      {pivotData.length > 1 && (
-        <div className="flex gap-1 border-b overflow-x-auto pb-0">
-          {pivotData.map(pd => (
-            <button key={pd.table.id} onClick={() => setActiveTable(pd.table.id)}
-              className={`flex items-center gap-2 px-4 py-2.5 text-sm whitespace-nowrap border-b-2 transition-all -mb-px font-medium ${activeTable === pd.table.id ? "border-blue-500 text-blue-600" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-              <Table2 className="w-3.5 h-3.5" />{pd.table.name}
-            </button>
-          ))}
+      {/* ── TABLES / DOCUMENTS SWITCH ── */}
+      <div className="flex items-center gap-0.5 bg-muted rounded-xl p-1 w-fit">
+        {([["tables","Tables",Table2],["documents","Documents",FileText]] as const).map(([k, label, Icon]) => (
+          <button key={k} onClick={() => setViewMode(k as ViewMode)}
+            className={cn("flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all",
+              viewMode === k ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground")}>
+            <Icon className="w-3.5 h-3.5" />{label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── SELECTOR ROW — table dropdown ya document-type dropdown ── */}
+      {viewMode === "tables" ? (
+        pivotData.length > 0 ? (
+          <div className="flex items-center gap-3 bg-muted/40 border rounded-xl px-4 py-3 flex-wrap">
+            <span className="text-xs text-muted-foreground font-medium">Select Table:</span>
+            <Select value={activeTable ?? pivotData[0].table.id} onValueChange={setActiveTable}>
+              <SelectTrigger className="h-8 w-56 text-xs bg-background">
+                <SelectValue placeholder="Choose a table..." />
+              </SelectTrigger>
+              <SelectContent>
+                {pivotData.map(pd => (
+                  <SelectItem key={pd.table.id} value={pd.table.id} className="text-xs">{pd.table.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {activePD && (
+              <>
+                <span className="text-xs text-muted-foreground">X-Axis:</span>
+                <Select value={xAxisMap[activePD.table.id] ?? ""} onValueChange={v => setXAxisMap(p => ({ ...p, [activePD.table.id]: v }))}>
+                  <SelectTrigger className="h-8 w-40 text-xs bg-background">
+                    <SelectValue placeholder="Column..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {activePD.tCols.filter(c => c.type !== "amount").map(c => (
+                      <SelectItem key={c.id} value={c.name} className="text-xs">{c.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <span className="text-xs text-muted-foreground">Y-Axis: <strong className="text-foreground">{activePD.amtCols.map(c => c.name).join(", ")}</strong></span>
+                {activePD.chartRows.length !== activePD.detailRows.length && (
+                  <span className="text-[11px] text-muted-foreground ml-auto">Charts show {activePD.chartRows.length} grouped points from {activePD.detailRows.length} rows</span>
+                )}
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="rounded-xl border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+            No table has an <strong>Amount (₹)</strong> column yet. Set a column's type to Amount on the Tables page to see it here.
+          </div>
+        )
+      ) : (
+        <div className="flex items-center gap-3 bg-muted/40 border rounded-xl px-4 py-3 flex-wrap">
+          <span className="text-xs text-muted-foreground font-medium">Select Document Type:</span>
+          <Select value={docTypeFilter} onValueChange={v => setDocTypeFilter(v as DocTypeFilter)}>
+            <SelectTrigger className="h-8 w-48 text-xs bg-background">
+              <SelectValue placeholder="Choose..." />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all" className="text-xs">All Documents</SelectItem>
+              <SelectItem value="invoice" className="text-xs">Invoices ({docTypeCounts.invoice})</SelectItem>
+              <SelectItem value="quotation" className="text-xs">Quotations ({docTypeCounts.quotation})</SelectItem>
+              <SelectItem value="bill" className="text-xs">Bills ({docTypeCounts.bill})</SelectItem>
+            </SelectContent>
+          </Select>
+          <span className="text-xs text-muted-foreground">Grouped by: <strong className="text-foreground">Date</strong></span>
         </div>
       )}
 
-      {activePD && (<>
-
-        {/* ── X-AXIS PICKER ── */}
-        <div className="flex items-center gap-3 bg-muted/40 border rounded-xl px-4 py-3 flex-wrap">
-          <span className="text-xs text-muted-foreground font-medium">X-Axis column:</span>
-          <Select value={xAxisMap[activePD.table.id] ?? ""} onValueChange={v => setXAxisMap(p => ({ ...p, [activePD.table.id]: v }))}>
-            <SelectTrigger className="h-7 w-44 text-xs bg-background">
-              <SelectValue placeholder="Choose column..." />
-            </SelectTrigger>
-            <SelectContent>
-              {activePD.tCols.filter(c => c.type !== "amount").map(c => (
-                <SelectItem key={c.id} value={c.name} className="text-xs">{c.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <span className="text-xs text-muted-foreground">Y-Axis: <strong className="text-foreground">{activePD.amtCols.map(c => c.name).join(", ")}</strong></span>
-          {activePD.chartRows.length !== activePD.detailRows.length && (
-            <span className="text-[11px] text-muted-foreground ml-auto">Charts show {activePD.chartRows.length} grouped points from {activePD.detailRows.length} rows</span>
-          )}
+      {!activePD ? (
+        <div className="rounded-xl border bg-muted/30 px-4 py-10 text-center text-sm text-muted-foreground">
+          {viewMode === "documents" ? "No documents match this selection yet." : "No data to show for this table yet."}
         </div>
+      ) : (<>
+
+        {viewMode === "documents" && docTypeFilter === "all" && (
+          <div className="grid gap-3 grid-cols-3">
+            <div className="rounded-xl border border-border/60 px-4 py-3 bg-muted/20">
+              <p className="text-xs text-muted-foreground">Invoices</p>
+              <p className="text-lg font-bold mt-0.5">{docTypeCounts.invoice}</p>
+            </div>
+            <div className="rounded-xl border border-border/60 px-4 py-3 bg-muted/20">
+              <p className="text-xs text-muted-foreground">Quotations</p>
+              <p className="text-lg font-bold mt-0.5">{docTypeCounts.quotation}</p>
+            </div>
+            <div className="rounded-xl border border-border/60 px-4 py-3 bg-muted/20">
+              <p className="text-xs text-muted-foreground">Bills</p>
+              <p className="text-lg font-bold mt-0.5">{docTypeCounts.bill}</p>
+            </div>
+          </div>
+        )}
 
         {/* ── STAT CARDS ── */}
         {activePD.stats.map((s, si) => (
@@ -569,6 +683,12 @@ export default function AnalyticsPage() {
               <thead>
                 <tr className="bg-muted/40 border-b">
                   <th className="text-left px-5 py-3 font-semibold text-muted-foreground text-xs tracking-wide uppercase">{activePD.xCol || "Row"}</th>
+                  {viewMode === "documents" && (
+                    <>
+                      <th className="text-left px-5 py-3 font-semibold text-muted-foreground text-xs tracking-wide uppercase">Type</th>
+                      <th className="text-left px-5 py-3 font-semibold text-muted-foreground text-xs tracking-wide uppercase">Status</th>
+                    </>
+                  )}
                   {activePD.amtCols.map(c => (
                     <th key={c.id} className="text-right px-5 py-3 font-semibold text-muted-foreground text-xs tracking-wide uppercase">{c.name}</th>
                   ))}
@@ -578,6 +698,12 @@ export default function AnalyticsPage() {
                 {activePD.detailRows.map((r, i) => (
                   <tr key={i} className="border-b last:border-0 hover:bg-muted/20 transition-colors">
                     <td className="px-5 py-3 font-medium text-sm">{r.name}</td>
+                    {viewMode === "documents" && (
+                      <>
+                        <td className="px-5 py-3 text-sm capitalize">{r.type}</td>
+                        <td className="px-5 py-3"><StatusPill label={r.status} /></td>
+                      </>
+                    )}
                     {activePD.amtCols.map(c => (
                       <td key={c.id} className="px-5 py-3 text-right font-semibold text-blue-600 text-sm">{formatCurrency(r[c.name] ?? 0, cur)}</td>
                     ))}
@@ -586,7 +712,7 @@ export default function AnalyticsPage() {
               </tbody>
               <tfoot>
                 <tr className="bg-blue-600 text-white">
-                  <td className="px-5 py-3.5 font-bold text-sm tracking-wide">TOTAL</td>
+                  <td className="px-5 py-3.5 font-bold text-sm tracking-wide" colSpan={viewMode === "documents" ? 3 : 1}>TOTAL</td>
                   {activePD.stats.map(s => (
                     <td key={s.col.id} className="px-5 py-3.5 text-right font-bold text-sm">{formatCurrency(s.total, cur)}</td>
                   ))}
