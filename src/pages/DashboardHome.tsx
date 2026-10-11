@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import {
   FileText, Table2, TrendingUp, Plus, Clock, IndianRupee,
   ArrowRight, TrendingDown, Crown, AlertTriangle, Sparkles,
+  LayoutDashboard,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -43,6 +44,25 @@ function mapToChartPoints(map: Record<string, { revenue: number; expense: number
 
 type TableAnalytics = { id: string; name: string; rowCount: number; revenue: number; expense: number; net: number; };
 
+// ── Tooltip jo Analytics page jaisa hi dikhe — dono jagah same feel ──────────
+function ChartTooltip({ active, payload, label, cur }: any) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-white dark:bg-background border border-gray-100 dark:border-border rounded-2xl shadow-2xl p-4 text-xs min-w-[150px]">
+      <p className="font-bold text-gray-800 dark:text-foreground mb-2 pb-2 border-b border-gray-100 dark:border-border">{label}</p>
+      {payload.map((p: any, i: number) => (
+        <div key={i} className="flex items-center justify-between gap-4 py-1">
+          <span className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: p.color }} />
+            <span className="text-gray-500">{p.name}</span>
+          </span>
+          <span className="font-bold text-gray-900 dark:text-foreground">{formatCurrency(p.value, cur)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function PlanBanner() {
   const { isPremium, isTrialActive, isTrialExpired, trialDaysLeft, premiumDaysLeft, profile, isOwner } = useAuth();
   const navigate = useNavigate();
@@ -55,14 +75,14 @@ function PlanBanner() {
       : null;
     const daysLeft = premiumDaysLeft;
     return (
-      <Card className={`glass-card ${daysLeft <= 5 ? "border-warning/50 bg-warning/5" : "border-green-500/30 bg-green-500/5"}`}>
-        <CardContent className="flex items-center justify-between py-3 flex-wrap gap-3">
+      <Card className={`rounded-2xl border shadow-sm ${daysLeft <= 5 ? "border-amber-200 bg-amber-50/60 dark:bg-amber-500/5" : "border-emerald-200 bg-emerald-50/60 dark:bg-emerald-500/5"}`}>
+        <CardContent className="flex items-center justify-between py-3.5 flex-wrap gap-3">
           <div className="flex items-center gap-3">
-            {daysLeft <= 5
-              ? <AlertTriangle className="h-5 w-5 text-warning shrink-0" />
-              : <Crown className="h-5 w-5 text-yellow-500 shrink-0" />}
+            <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl", daysLeft <= 5 ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600")}>
+              {daysLeft <= 5 ? <AlertTriangle className="h-4.5 w-4.5" /> : <Crown className="h-4.5 w-4.5" />}
+            </div>
             <div>
-              <p className={`text-sm font-semibold ${daysLeft <= 5 ? "text-warning" : "text-green-600"}`}>
+              <p className={`text-sm font-semibold ${daysLeft <= 5 ? "text-amber-700" : "text-emerald-700"}`}>
                 {daysLeft <= 5 ? "Premium expiring soon!" : "Premium Active ✨"}
               </p>
               <p className="text-xs text-muted-foreground">
@@ -70,7 +90,7 @@ function PlanBanner() {
               </p>
             </div>
           </div>
-          {daysLeft <= 5 && <Button size="sm" onClick={() => navigate("/dashboard/pricing")}>Renew Now</Button>}
+          {daysLeft <= 5 && <Button size="sm" className="rounded-xl" onClick={() => navigate("/dashboard/pricing")}>Renew Now</Button>}
         </CardContent>
       </Card>
     );
@@ -79,12 +99,14 @@ function PlanBanner() {
   if (isTrialActive) {
     const urgency = trialDaysLeft <= 2;
     return (
-      <Card className={cn("glass-card", urgency ? "border-destructive/40 bg-destructive/5" : "border-primary/30 bg-primary/5")}>
-        <CardContent className="flex items-center justify-between py-3 flex-wrap gap-3">
+      <Card className={cn("rounded-2xl border shadow-sm", urgency ? "border-red-200 bg-red-50/60 dark:bg-red-500/5" : "border-blue-200 bg-blue-50/60 dark:bg-blue-500/5")}>
+        <CardContent className="flex items-center justify-between py-3.5 flex-wrap gap-3">
           <div className="flex items-center gap-3">
-            <Clock className={cn("h-5 w-5 shrink-0", urgency ? "text-destructive" : "text-primary")} />
+            <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl", urgency ? "bg-red-100 text-red-600" : "bg-blue-100 text-blue-600")}>
+              <Clock className="h-4.5 w-4.5" />
+            </div>
             <div>
-              <p className={cn("text-sm font-semibold", urgency ? "text-destructive" : "text-primary")}>
+              <p className={cn("text-sm font-semibold", urgency ? "text-red-700" : "text-blue-700")}>
                 Free Trial — {trialDaysLeft} day{trialDaysLeft !== 1 ? "s" : ""} left
               </p>
               <p className="text-xs text-muted-foreground">
@@ -92,7 +114,7 @@ function PlanBanner() {
               </p>
             </div>
           </div>
-          <Button size="sm" variant={urgency ? "destructive" : "default"} onClick={() => navigate("/dashboard/pricing")}>
+          <Button size="sm" className="rounded-xl" variant={urgency ? "destructive" : "default"} onClick={() => navigate("/dashboard/pricing")}>
             <Sparkles className="h-3 w-3 mr-1" /> Upgrade
           </Button>
         </CardContent>
@@ -102,16 +124,18 @@ function PlanBanner() {
 
   if (isTrialExpired) {
     return (
-      <Card className="glass-card border-destructive/50 bg-destructive/5">
-        <CardContent className="flex items-center justify-between py-3 flex-wrap gap-3">
+      <Card className="rounded-2xl border border-red-200 bg-red-50/60 dark:bg-red-500/5 shadow-sm">
+        <CardContent className="flex items-center justify-between py-3.5 flex-wrap gap-3">
           <div className="flex items-center gap-3">
-            <AlertTriangle className="h-5 w-5 text-destructive shrink-0" />
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-100 text-red-600">
+              <AlertTriangle className="h-4.5 w-4.5" />
+            </div>
             <div>
-              <p className="text-sm font-semibold text-destructive">Free Trial Expired</p>
+              <p className="text-sm font-semibold text-red-700">Free Trial Expired</p>
               <p className="text-xs text-muted-foreground">Upgrade to continue using all features.</p>
             </div>
           </div>
-          <Button size="sm" variant="destructive" onClick={() => navigate("/dashboard/pricing")}>
+          <Button size="sm" className="rounded-xl" variant="destructive" onClick={() => navigate("/dashboard/pricing")}>
             <Crown className="h-3 w-3 mr-1" /> Upgrade Now
           </Button>
         </CardContent>
@@ -120,6 +144,52 @@ function PlanBanner() {
   }
 
   return null;
+}
+
+// ── Professional stat card — Analytics page jaisa hi color-coded style ──────
+const CARD_PALETTE = {
+  emerald: { bg: "bg-emerald-50 dark:bg-emerald-500/5", border: "border-emerald-100 dark:border-emerald-500/20", text: "text-emerald-600" },
+  red:     { bg: "bg-red-50 dark:bg-red-500/5",         border: "border-red-100 dark:border-red-500/20",         text: "text-red-500" },
+  blue:    { bg: "bg-blue-50 dark:bg-blue-500/5",       border: "border-blue-100 dark:border-blue-500/20",       text: "text-blue-600" },
+  amber:   { bg: "bg-amber-50 dark:bg-amber-500/5",     border: "border-amber-100 dark:border-amber-500/20",     text: "text-amber-600" },
+};
+
+function StatCard({ title, value, icon: Icon, tone }: { title: string; value: string; icon: any; tone: keyof typeof CARD_PALETTE }) {
+  const p = CARD_PALETTE[tone];
+  return (
+    <div className={cn("rounded-2xl border p-4 hover:shadow-md transition-all", p.bg, p.border)}>
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs text-muted-foreground font-medium">{title}</span>
+        <div className={cn("flex h-7 w-7 items-center justify-center rounded-lg bg-white/70 dark:bg-background/40", p.text)}>
+          <Icon className="h-3.5 w-3.5" />
+        </div>
+      </div>
+      <p className={cn("text-xl font-bold tracking-tight", p.text)}>{value}</p>
+    </div>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-xl border border-border/60 px-4 py-3 bg-muted/20">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="text-lg font-bold mt-0.5">{value}</p>
+    </div>
+  );
+}
+
+const STATUS_STYLE: Record<string, string> = {
+  paid: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  complete: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  completed: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  pending: "bg-amber-50 text-amber-700 border-amber-200",
+  draft: "bg-gray-100 text-gray-600 border-gray-200",
+  overdue: "bg-red-50 text-red-700 border-red-200",
+  cancelled: "bg-red-50 text-red-700 border-red-200",
+};
+function StatusPill({ label }: { label: string }) {
+  const cls = STATUS_STYLE[label.toLowerCase()] ?? "bg-blue-50 text-blue-700 border-blue-200";
+  return <span className={cn("inline-block px-2.5 py-0.5 rounded-full text-[11px] font-medium border capitalize", cls)}>{label}</span>;
 }
 
 export default function DashboardHome() {
@@ -140,10 +210,12 @@ export default function DashboardHome() {
   const [docStatusBreakdown, setDocStatusBreakdown] = useState<{ label: string; count: number; total: number }[]>([]);
   const [tableAnalytics, setTableAnalytics] = useState<TableAnalytics[]>([]);
   const [selectedAnalyticsTableId, setSelectedAnalyticsTableId] = useState<string>("all");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!profile) return;
     const load = async () => {
+      setLoading(true);
       const [t, i, p] = await Promise.all([
         supabase.from("user_tables").select("id", { count: "exact", head: true }).eq("user_id", profile.id),
         supabase.from("invoices").select("id", { count: "exact", head: true }).eq("user_id", profile.id),
@@ -215,10 +287,15 @@ export default function DashboardHome() {
           colsByTable.set(c.table_id, arr);
         });
 
+        // ✅ sirf un rows ko ginna jo khaali nahi hain — "+Add Row" se bani khaali
+        // row ko bhi pehle count kar liya jaata tha, isse chart/number dono me
+        // phantom entries aa jaati thi
         const { data: rowsData } = await supabase.from("user_rows").select("table_id,row_data,created_at").in("table_id", tableIds);
         (rowsData ?? []).forEach((r: any) => {
           const cols = colsByTable.get(r.table_id) ?? [];
           if (!cols.length) return;
+          const hasAnyValue = Object.values(r.row_data ?? {}).some((v: any) => v !== null && v !== undefined && String(v).trim() !== "");
+          if (!hasAnyValue) return;
           const dk = dayKey(r.created_at);
           ensureAllDay(dk);
           ensureTblDay(r.table_id, dk);
@@ -270,13 +347,14 @@ export default function DashboardHome() {
         const exists = (allTables ?? []).some((t: any) => t.id === selectedAnalyticsTableId);
         if (!exists) setSelectedAnalyticsTableId("all");
       }
+      setLoading(false);
     };
     load();
   }, [profile, isOwner]);
 
   const displayName = profile?.display_name || profile?.email?.split("@")[0] || "User";
+  const todayLabel = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" });
 
-  // when a specific table is selected, use that table's revenue/expense
   const selectedTableAnalytics = selectedAnalyticsTableId !== "all"
     ? tableAnalytics.find(t => t.id === selectedAnalyticsTableId)
     : null;
@@ -294,23 +372,30 @@ export default function DashboardHome() {
     : "Daily revenue vs expenses from your documents";
 
   const quickActions = [
-    { label: "Create Table", desc: "Add a new table", icon: Plus, color: "text-success", bg: "bg-success/10", onClick: () => navigate("/dashboard/tables") },
-    { label: "New Invoice", desc: "Create document", icon: FileText, color: "text-info", bg: "bg-info/10", onClick: () => navigate("/dashboard/invoices") },
-    { label: "New Quotation", desc: "Quote a customer", icon: FileText, color: "text-primary", bg: "bg-primary/10", onClick: () => navigate("/dashboard/invoices") },
+    { label: "Create Table", desc: "Add a new table", icon: Plus, tone: "emerald" as const, onClick: () => navigate("/dashboard/tables") },
+    { label: "New Invoice", desc: "Create document", icon: FileText, tone: "blue" as const, onClick: () => navigate("/dashboard/invoices") },
+    { label: "New Quotation", desc: "Quote a customer", icon: FileText, tone: "amber" as const, onClick: () => navigate("/dashboard/invoices") },
   ];
 
   return (
     <div className="animate-fade-in space-y-6">
-      <div>
-        <h1 className="text-2xl md:text-3xl font-display font-bold">Welcome back, {displayName}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Here's what's happening with your business today</p>
+      {/* ── HEADER ── */}
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight flex items-center gap-2">
+            <div className="w-9 h-9 rounded-xl bg-blue-500/10 flex items-center justify-center shrink-0">
+              <LayoutDashboard className="w-4.5 h-4.5 text-blue-600" />
+            </div>
+            Welcome back, {displayName}
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">{todayLabel} · Here's what's happening with your business today</p>
+        </div>
       </div>
 
       <PlanBanner />
 
-      {/* Trial expired banner on dashboard home */}
       {!isOwner && !isPremium && isTrialExpired && (
-        <div className="rounded-2xl bg-gradient-to-r from-indigo-600 to-purple-600 p-5 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg shadow-indigo-200">
+        <div className="rounded-2xl bg-gradient-to-r from-indigo-600 to-purple-600 p-5 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg shadow-indigo-200/60">
           <div className="text-white text-center sm:text-left">
             <p className="font-bold text-base">🔒 Your Free Trial Has Ended</p>
             <p className="text-indigo-100 text-xs mt-0.5">Upgrade to Premium to unlock Tables, Analytics, Documents & more. Your data is safe.</p>
@@ -324,41 +409,46 @@ export default function DashboardHome() {
         </div>
       )}
 
-      <Card className="glass-card">
-        <CardContent className="py-3 flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant={activeTab === "tables" ? "default" : "outline"} className="gap-2" onClick={() => setActiveTab("tables")}><Table2 className="h-4 w-4" />Tables</Button>
-            <Button size="sm" variant={activeTab === "documents" ? "default" : "outline"} className="gap-2" onClick={() => setActiveTab("documents")}><FileText className="h-4 w-4" />Documents</Button>
-          </div>
-          <p className="text-xs text-muted-foreground">Viewing: <span className="font-medium capitalize">{activeTab}</span></p>
-        </CardContent>
-      </Card>
+      {/* ── TAB SWITCHER — Analytics page ke chart-mode switcher jaisa hi style ── */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-0.5 bg-muted rounded-xl p-1 w-fit">
+          {([["tables","Tables",Table2],["documents","Documents",FileText]] as const).map(([k, label, Icon]) => (
+            <button key={k} onClick={() => setActiveTab(k as TabKey)}
+              className={cn("flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all",
+                activeTab === k ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground")}>
+              <Icon className="w-3.5 h-3.5" />{label}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">Viewing: <span className="font-medium capitalize text-foreground">{activeTab}</span></p>
+      </div>
 
+      {/* ── STAT CARDS ── */}
       <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
         <StatCard
           title={activeTab === "documents" ? "Documents Revenue" : selectedAnalyticsTableId === "all" ? "All Tables Revenue" : `${selectedTableName} Revenue`}
-          value={formatCurrency(activeRevenue, userCurrency)} icon={TrendingUp} color="text-success" />
+          value={formatCurrency(activeRevenue, userCurrency)} icon={TrendingUp} tone="emerald" />
         <StatCard
           title={activeTab === "documents" ? "Documents Expenses" : selectedAnalyticsTableId === "all" ? "All Tables Expenses" : `${selectedTableName} Expenses`}
-          value={formatCurrency(activeExpenses, userCurrency)} icon={TrendingDown} color="text-destructive" />
+          value={formatCurrency(activeExpenses, userCurrency)} icon={TrendingDown} tone="red" />
         <StatCard
           title={activeTab === "documents" ? "Documents Net" : selectedAnalyticsTableId === "all" ? "All Tables Net" : `${selectedTableName} Net`}
-          value={formatCurrency(activeNetProfit, userCurrency)} icon={IndianRupee} color="text-primary" />
-        <StatCard title="Plan" value={isPremium ? "Premium ✨" : "Free Trial"} icon={isPremium ? Crown : Clock} color={isPremium ? "text-yellow-500" : "text-muted-foreground"} />
+          value={formatCurrency(activeNetProfit, userCurrency)} icon={IndianRupee} tone="blue" />
+        <StatCard title="Plan" value={isPremium ? "Premium ✨" : "Free Trial"} icon={isPremium ? Crown : Clock} tone="amber" />
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="glass-card lg:col-span-2">
+        <Card className="rounded-2xl border shadow-sm lg:col-span-2">
           <CardHeader className="space-y-2">
             <div className="flex items-start justify-between gap-3 flex-wrap">
               <div>
-                <CardTitle className="text-base">{chartTitle}</CardTitle>
-                <p className="text-xs text-muted-foreground">{chartSubtitle}</p>
+                <CardTitle className="text-base font-semibold">{chartTitle}</CardTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">{chartSubtitle}</p>
               </div>
               {activeTab === "tables" && (
                 <div className="min-w-[220px]">
                   <Select value={selectedAnalyticsTableId} onValueChange={setSelectedAnalyticsTableId}>
-                    <SelectTrigger className="h-9"><SelectValue placeholder="Select table" /></SelectTrigger>
+                    <SelectTrigger className="h-9 rounded-xl"><SelectValue placeholder="Select table" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All Tables</SelectItem>
                       {tableAnalytics.map(t => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
@@ -369,15 +459,19 @@ export default function DashboardHome() {
             </div>
           </CardHeader>
           <CardContent>
-            {activeChartData.length > 0 ? (
+            {loading ? (
+              <div className="h-[220px] flex items-center justify-center">
+                <div className="animate-spin w-7 h-7 border-[3px] border-primary border-t-transparent rounded-full" />
+              </div>
+            ) : activeChartData.length > 0 ? (
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={activeChartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
-                  <Bar dataKey="revenue" fill="hsl(152,69%,31%)" radius={[4,4,0,0]} name="Revenue" />
-                  <Bar dataKey="expense" fill="hsl(0,72%,51%)" radius={[4,4,0,0]} name="Expenses" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                  <XAxis dataKey="name" tick={{ fontSize: 11 }} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} width={56} />
+                  <Tooltip content={<ChartTooltip cur={userCurrency} />} cursor={{ fill: "rgba(0,0,0,0.03)" }} />
+                  <Bar dataKey="revenue" fill="#10b981" radius={[6,6,0,0]} name="Revenue" maxBarSize={44} />
+                  <Bar dataKey="expense" fill="#ef4444" radius={[6,6,0,0]} name="Expenses" maxBarSize={44} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
@@ -390,28 +484,31 @@ export default function DashboardHome() {
           </CardContent>
         </Card>
 
-        <Card className="glass-card">
-          <CardHeader><CardTitle className="text-base">Quick Actions</CardTitle></CardHeader>
+        <Card className="rounded-2xl border shadow-sm">
+          <CardHeader><CardTitle className="text-base font-semibold">Quick Actions</CardTitle></CardHeader>
           <CardContent className="space-y-2">
-            {quickActions.map(a => (
-              <Button key={a.label} variant="ghost" className="w-full justify-start gap-3 h-auto py-2.5" onClick={a.onClick}>
-                <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", a.bg)}>
-                  <a.icon className={cn("h-4 w-4", a.color)} />
-                </div>
-                <div className="text-left">
-                  <p className="text-sm font-medium">{a.label}</p>
-                  <p className="text-xs text-muted-foreground">{a.desc}</p>
-                </div>
-              </Button>
-            ))}
+            {quickActions.map(a => {
+              const p = CARD_PALETTE[a.tone];
+              return (
+                <Button key={a.label} variant="ghost" className="w-full justify-start gap-3 h-auto py-2.5 rounded-xl hover:bg-muted/60" onClick={a.onClick}>
+                  <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl", p.bg, p.text)}>
+                    <a.icon className="h-4 w-4" />
+                  </div>
+                  <div className="text-left">
+                    <p className="text-sm font-medium">{a.label}</p>
+                    <p className="text-xs text-muted-foreground">{a.desc}</p>
+                  </div>
+                </Button>
+              );
+            })}
           </CardContent>
         </Card>
       </div>
 
-      <Card className="glass-card">
+      <Card className="rounded-2xl border shadow-sm">
         <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-3">
-          <CardTitle className="text-base">Details</CardTitle>
-          <Button size="sm" variant="outline" className="gap-2" onClick={() => navigate(activeTab === "tables" ? "/dashboard/tables" : "/dashboard/invoices")}>
+          <CardTitle className="text-base font-semibold">Details</CardTitle>
+          <Button size="sm" variant="outline" className="gap-2 rounded-xl" onClick={() => navigate(activeTab === "tables" ? "/dashboard/tables" : "/dashboard/invoices")}>
             {activeTab === "tables" ? <Table2 className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
             Open {activeTab === "tables" ? "Tables" : "Documents"}
           </Button>
@@ -428,22 +525,24 @@ export default function DashboardHome() {
               ) : (
                 <div className="space-y-2">
                   {tableAnalytics.slice(0, 8).map(t => (
-                    <div key={t.id} className="rounded-lg border border-border/50 px-4 py-3 hover:bg-muted/30 transition-colors cursor-pointer" onClick={() => setSelectedAnalyticsTableId(t.id)}>
+                    <div key={t.id} className="rounded-xl border border-border/60 px-4 py-3 hover:bg-muted/40 hover:border-border transition-colors cursor-pointer" onClick={() => setSelectedAnalyticsTableId(t.id)}>
                       <div className="flex items-center justify-between gap-3 flex-wrap">
                         <div className="flex items-center gap-3">
-                          <Table2 className="h-4 w-4 text-muted-foreground" />
+                          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-500/10">
+                            <Table2 className="h-4 w-4 text-blue-600" />
+                          </div>
                           <span className="font-medium text-sm">{t.name}</span>
                           <span className="text-xs text-muted-foreground">({t.rowCount} rows)</span>
                         </div>
-                        <div className="flex items-center gap-4 text-xs">
-                          <span className="text-success font-medium">+{formatCurrency(t.revenue, userCurrency)}</span>
-                          <span className="text-destructive font-medium">-{formatCurrency(t.expense, userCurrency)}</span>
-                          <span className={cn("font-semibold", t.net >= 0 ? "text-primary" : "text-destructive")}>Net: {formatCurrency(t.net, userCurrency)}</span>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-medium">+{formatCurrency(t.revenue, userCurrency)}</span>
+                          <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-600 font-medium">-{formatCurrency(t.expense, userCurrency)}</span>
+                          <span className={cn("px-2 py-0.5 rounded-full font-semibold", t.net >= 0 ? "bg-blue-50 text-blue-700" : "bg-red-50 text-red-700")}>Net: {formatCurrency(t.net, userCurrency)}</span>
                         </div>
                       </div>
                     </div>
                   ))}
-                  <p className="text-[11px] text-muted-foreground">Tip: Click on a table row to view its chart above.</p>
+                  <p className="text-[11px] text-muted-foreground pt-1">Tip: Click on a table row to view its chart above.</p>
                 </div>
               )}
               {recentTables.length > 0 && (
@@ -451,7 +550,7 @@ export default function DashboardHome() {
                   <p className="text-xs text-muted-foreground mb-2">Recently created</p>
                   <div className="space-y-2">
                     {recentTables.map(t => (
-                      <div key={t.id} className="flex items-center justify-between rounded-lg border border-border/50 px-4 py-3 hover:bg-muted/30 transition-colors cursor-pointer" onClick={() => navigate("/dashboard/tables")}>
+                      <div key={t.id} className="flex items-center justify-between rounded-xl border border-border/60 px-4 py-3 hover:bg-muted/40 transition-colors cursor-pointer" onClick={() => navigate("/dashboard/tables")}>
                         <div className="flex items-center gap-3">
                           <Table2 className="h-4 w-4 text-muted-foreground" />
                           <span className="font-medium text-sm">{t.name}</span>
@@ -477,21 +576,21 @@ export default function DashboardHome() {
               {docStatusBreakdown.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No documents yet. Create an invoice/quotation/bill to see breakdown.</p>
               ) : (
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto rounded-xl border border-border/60">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="border-b">
-                        <th className="px-3 py-2 text-left font-medium text-muted-foreground">Status</th>
-                        <th className="px-3 py-2 text-right font-medium text-muted-foreground">Count</th>
-                        <th className="px-3 py-2 text-right font-medium text-muted-foreground">Total</th>
+                      <tr className="border-b bg-muted/30">
+                        <th className="px-4 py-2.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wide">Status</th>
+                        <th className="px-4 py-2.5 text-right font-medium text-muted-foreground text-xs uppercase tracking-wide">Count</th>
+                        <th className="px-4 py-2.5 text-right font-medium text-muted-foreground text-xs uppercase tracking-wide">Total</th>
                       </tr>
                     </thead>
                     <tbody>
                       {docStatusBreakdown.map(s => (
-                        <tr key={s.label} className="border-b border-border/50">
-                          <td className="px-3 py-2 capitalize">{s.label}</td>
-                          <td className="px-3 py-2 text-right">{s.count}</td>
-                          <td className="px-3 py-2 text-right font-medium">{formatCurrency(s.total, userCurrency)}</td>
+                        <tr key={s.label} className="border-b border-border/40 last:border-0 hover:bg-muted/20">
+                          <td className="px-4 py-2.5"><StatusPill label={s.label} /></td>
+                          <td className="px-4 py-2.5 text-right">{s.count}</td>
+                          <td className="px-4 py-2.5 text-right font-semibold">{formatCurrency(s.total, userCurrency)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -504,38 +603,13 @@ export default function DashboardHome() {
       </Card>
 
       {isOwner && stats.pending > 0 && (
-        <Card className="glass-card border-warning/30">
+        <Card className="rounded-2xl border border-amber-200 bg-amber-50/50 shadow-sm">
           <CardContent className="flex items-center justify-between py-4">
             <p className="text-sm font-medium">{stats.pending} pending purchase request(s)</p>
-            <Button size="sm" variant="outline" onClick={() => navigate("/dashboard/pricing")}>Review</Button>
+            <Button size="sm" variant="outline" className="rounded-xl" onClick={() => navigate("/dashboard/pricing")}>Review</Button>
           </CardContent>
         </Card>
       )}
     </div>
-  );
-}
-
-function MiniStat({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-lg border border-border/50 px-4 py-3">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="text-lg font-bold">{value}</p>
-    </div>
-  );
-}
-
-function StatCard({ title, value, icon: Icon, color }: { title: string; value: string; icon: any; color: string; }) {
-  return (
-    <Card className="glass-card">
-      <CardContent className="flex items-center gap-4 pt-6">
-        <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-muted", color)}>
-          <Icon className="h-5 w-5" />
-        </div>
-        <div>
-          <p className="text-xs text-muted-foreground">{title}</p>
-          <p className="text-lg font-bold">{value}</p>
-        </div>
-      </CardContent>
-    </Card>
   );
 }
