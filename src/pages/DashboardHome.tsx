@@ -11,22 +11,20 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 /* ════════════════════════════════════════════════════════════════════
-   ROUTES — SIRF YAHAN BADLO.
-   Apne sidebar ke har page par click karke browser ka URL dekho aur
-   yahan same likho. Yahin se saare buttons / cards / list chalte hain.
+   ROUTES — App.tsx ke hisaab se. Saare pages /dashboard ke andar hain.
    ════════════════════════════════════════════════════════════════════ */
 const ROUTES = {
-  tables: "/tables",
-  documents: "/documents",
-  docEditor: "/doc-editor",
-  analytics: "/analytics",
-  pricing: "/pricing",
+  tables: "/dashboard/tables",
+  documents: "/dashboard/invoices",
+  docEditor: "/dashboard/document-editor",
+  analytics: "/dashboard/analytics",
+  pricing: "/dashboard/pricing",
   // "Create table" par table page khulke naam wala box turant khul jaye:
-  newTable: "/tables?new=1",
+  newTable: "/dashboard/tables?new=1",
   // Recent work me table par click:
-  openTable: (id: string) => `/tables?t=${id}`,
-  // Recent work me quotation/invoice par click. `d` poori invoices row hai (d.id, d.type ...)
-  openDocument: (d: any) => `/documents`,
+  openTable: (id: string) => `/dashboard/tables?t=${id}`,
+  // Recent work me quotation/invoice par click
+  openDocument: (_d: any) => `/dashboard/invoices`,
 };
 
 /* ═════════ small helpers ═════════ */
@@ -73,7 +71,7 @@ const pick = (o: any, keys: string[]) => { for (const k of keys) { const v = o?.
 /* readable document name: number > party name > date (kabhi uuid nahi) */
 function docLabel(x: any) {
   const type = cap(x.type) || "Document";
-  const number = pick(x, ["invoice_number", "quotation_number", "bill_number", "doc_number", "document_number", "number", "title", "name"])
+  const number = pick(x, ["doc_no", "invoice_number", "quotation_number", "bill_number", "doc_number", "document_number", "number", "title", "name"])
     || pick(x.data, ["invoice_number", "number", "title"]);
   const party = pick(x, ["customer_name", "client_name", "party_name", "buyer_name", "bill_to_name"])
     || pick(x.customer ?? x.client ?? x.party ?? x.data?.customer ?? x.data?.client, ["name"]);
