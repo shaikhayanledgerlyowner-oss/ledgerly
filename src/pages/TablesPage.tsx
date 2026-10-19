@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Plus, Table2, Trash2, Edit3, Search, SortAsc, SortDesc,
   MoreHorizontal, X, Calculator, Download, FileSpreadsheet,
   AlignLeft, AlignCenter, AlignRight, Palette, RefreshCw,
-  ChevronDown, Sigma, Upload,
+  ChevronDown, Sigma, Upload, BarChart3,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
@@ -27,6 +28,7 @@ import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
+import PivotBuilderDialog from "@/components/PivotBuilderDialog";
 
 interface DbTable  { id:string; user_id:string; name:string; created_at:string; }
 interface DbColumn { id:string; table_id:string; name:string; type:string; created_at:string; }
@@ -241,7 +243,7 @@ const ocrWordsFromResult=(data:any):OcrWord[]=>{
     .map(w=>({text:String(w.text).trim(),x0:w.bbox.x0,x1:w.bbox.x1,y0:w.bbox.y0,y1:w.bbox.y1}));
 };
 
-// ✅ NAYA: header row aksar OCR me miss ho jaata hai kyunki header ka font/weight
+// ✅ header row aksar OCR me miss ho jaata hai kyunki header ka font/weight
 // data rows se alag hota hai, aur "PSM 6 — uniform block" mode isko poori tarah
 // hi drop kar deta hai (galat padhta nahi, PADTA HI NAHI). Isiliye single pass
 // kaafi nahi — hum poori image do alag layout-mode (PSM 6 aur PSM 4) me padhte
@@ -260,7 +262,7 @@ const mergeWords=(a:OcrWord[],b:OcrWord[]):OcrWord[]=>{
 };
 
 // ── image preprocessing ──────────────────────────────────────────────────────
-// ✅ NAYA: gehre (dark blue) header band me SAFED text hota hai. Tesseract ko
+// ✅ gehre (dark blue) header band me SAFED text hota hai. Tesseract ko
 // "safed background par kaala text" chahiye, isliye pehle wo header ka band
 // detect karke usko invert kar dete hain (safed text → kaala text). Isi wajah
 // se pehle blue header OCR me aata hi nahi tha aur pehli data row header ban jaati thi.
@@ -353,7 +355,7 @@ export default function TablesPage(){
   const colsRef=useRef<DbColumn[]>([]);
   const rowsRef=useRef<DbRow[]>([]);          // filtered/sorted (jo screen par dikh raha hai)
 
-  // ✅ NAYA: poori rows ki "sach" copy jo turant (synchronously) update hoti hai,
+  // ✅ poori rows ki "sach" copy jo turant (synchronously) update hoti hai,
   // aur DB writes ek queue me order se jaate hain. Isse Enter dabate hi cursor
   // turant agle cell/row me chala jata hai — network ka wait nahi hota.
   const allRowsRef=useRef<DbRow[]>([]);
@@ -391,9 +393,22 @@ export default function TablesPage(){
   const [countResult,setCountResult]=useState<number|null>(null);
   const [newTableName,setNewTableName]=useState("");
   const [addingTable,setAddingTable]=useState(false);
+  const [pivotOpen,setPivotOpen]=useState(false);   // ✅ Create Analysis dialog
   const [showBg,setShowBg]=useState(false);
   const [showTx,setShowTx]=useState(false);
   const [ctx,setCtx]=useState<Ctx|null>(null);
+
+  // ✅ Dashboard se aane wale links: ?new=1 (naya table) aur ?t=<id> (table kholo)
+  const [sp,setSp]=useSearchParams();
+  useEffect(()=>{
+    if(sp.get("new")==="1"){setAddingTable(true);setSp({},{replace:true});}
+  },[sp]);
+  useEffect(()=>{
+    const t=sp.get("t");
+    if(!t||!tables.length)return;
+    const f=tables.find(x=>x.id===t);
+    if(f){setSelTable(f);setSp({},{replace:true});}
+  },[tables,sp]);
 
   useEffect(()=>{editValRef.current=editVal;},[editVal]);
   useEffect(()=>{colsRef.current=columns;},[columns]);
@@ -590,7 +605,7 @@ export default function TablesPage(){
     if(focus)focusCell(rowId,colName);
   };
 
-  // ✅ ab synchronous hai — state turant badalta hai, DB save queue me jaata hai.
+  // ✅ synchronous — state turant badalta hai, DB save queue me jaata hai.
   // Value same ho to kuch nahi karta (blur + Enter ka double-save khatam).
   const saveCell=(rowId:string,colName:string,val:string,skipHistory=false):void=>{
     const row=allRowsRef.current.find(r=>r.id===rowId);
@@ -824,7 +839,7 @@ export default function TablesPage(){
     setSelCells(s);
   };
 
-  // ✅ NAYA: header click = poori column (header + saari cells) select.
+  // ✅ header click = poori column (header + saari cells) select.
   // Drag / Shift+click = kai columns. Ctrl+click = ek-ek karke add/remove.
   const selectColRange=(a:number,b:number)=>{
     setEditCell(null);
@@ -1003,13 +1018,9 @@ export default function TablesPage(){
     doc.save(`${safeFile(selTable.name)}.pdf`);toast.success("PDF downloaded");
   };
 
-  // ✅ FIX: purani "xlsx" library sirf PADH sakti hai, koi bhi COLOR/BOLD/MERGE
-  // likh nahi sakti (free version me writing-styles support hi nahi hai) —
-  // isliye pehle jo bhi color/bold set karte the wo Excel me khul ke gayab ho
-  // jaata tha. Ab "exceljs" use kar rahe hain jo asli formatting file me likhti
-  // hai — title poori width me merge hokar bade bold text + tumhare diye hue
-  // color ke saath aayega, header row bold + grey background, aur har cell
-  // apna color/bold/align sahi se le kar aayega.
+  // ✅ "exceljs" use hota hai jo asli formatting (color/bold/merge) file me likhti hai —
+  // title poori width me merge hokar bade bold text + diye hue color ke saath aata hai,
+  // header row bold + grey background, aur har cell apna color/bold/align sahi se leta hai.
   const dlExcel=async()=>{
     if(!hasAccess)return toast.error("Upgrade to download");
     if(!selTable||!columns.length)return;
@@ -1090,6 +1101,18 @@ export default function TablesPage(){
       {/* hidden inputs: camera + upload */}
       <input ref={upRef} type="file" accept=".xlsx,.xls,.xlsm,.csv,.tsv,image/*" className="hidden"
         onChange={e=>{handleFile(e.target.files?.[0]);e.currentTarget.value="";}}/>
+
+      {/* ✅ Create Analysis (pivot) dialog */}
+      {selTable&&(
+        <PivotBuilderDialog
+          open={pivotOpen}
+          onOpenChange={setPivotOpen}
+          tableId={selTable.id}
+          tableName={selTable.name}
+          columns={columns.map(c=>c.name)}
+          rows={rows.map(r=>r.row_data)}
+        />
+      )}
 
       {busy&&(
         <div className="fixed inset-0 z-[10000] bg-black/40 flex items-center justify-center">
@@ -1283,6 +1306,13 @@ export default function TablesPage(){
             <Sigma className="w-3.5 h-3.5"/>Sum
           </Button>
 
+          {/* ══ CREATE ANALYSIS (pivot) ══ */}
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1 text-emerald-600 hover:bg-emerald-50"
+            title="Pivot jaisa analysis banao — Analytics page me dikhega"
+            onClick={()=>setPivotOpen(true)} disabled={!selTable||!columns.length||!rows.length}>
+            <BarChart3 className="w-3.5 h-3.5"/>Create Analysis
+          </Button>
+
           <div className="w-px h-6 bg-border mx-0.5"/>
           {/* ══ UPLOAD (Excel / CSV / Image) ══ */}
           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1" title="Excel / CSV / PNG import"
@@ -1396,7 +1426,7 @@ export default function TablesPage(){
                     const hs=styleMap[hStyleKey];
                     return(
                       <th key={col.id}
-                        // ✅ header ab Excel jaisa: click = poori column select, drag/Shift = kai columns,
+                        // header Excel jaisa: click = poori column select, drag/Shift = kai columns,
                         // Ctrl+click = ek-ek add/remove, Double-click = naam badlo
                         className={`border border-[#d0d0d0] h-8 text-xs font-medium select-none relative group transition-colors cursor-pointer ${isHSel?"z-10":"hover:bg-[#e8e8e8]"}`}
                         style={{background:hs?.bg??"#f2f2f2",color:hs?.color,fontWeight:hs?.bold?"bold":600,boxShadow:isHSel?"inset 0 0 0 2px #1a73e8":undefined}}
