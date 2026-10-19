@@ -142,7 +142,7 @@ function AnalysisCard({ a, rows, tableName, cur, onDelete, onOpenTable }: {
   );
 }
 
-export default function SavedAnalyses() {
+export default function SavedAnalyses({ hideEmpty = false }: { hideEmpty?: boolean }) {
   const { profile, userCurrency } = useAuth() as any;
   const navigate = useNavigate();
   const uid = profile?.id;
@@ -185,12 +185,14 @@ export default function SavedAnalyses() {
     toast.success("Deleted");
   };
 
-  if (loading) return (
+  if (loading) return hideEmpty ? null : (
     <div className="flex h-48 items-center justify-center">
       <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
     </div>
   );
   if (error) return <p className="rounded-xl border bg-muted/30 px-4 py-8 text-center text-sm text-red-600">{error}</p>;
+
+  if (!items.length && hideEmpty) return null;
 
   if (!items.length) return (
     <div className="flex flex-col items-center gap-3 rounded-xl border bg-muted/30 px-4 py-14 text-center">
@@ -207,6 +209,7 @@ export default function SavedAnalyses() {
 
   return (
     <div className="space-y-5">
+      {hideEmpty && <h2 className="text-sm font-semibold text-muted-foreground">Your Analyses</h2>}
       {items.map(a => (
         <AnalysisCard key={a.id} a={a} rows={rowsByTable[a.table_id] ?? []}
           tableName={names[a.table_id] ?? "Table"} cur={cur}
