@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import {
@@ -18,6 +19,7 @@ import { formatCurrency, formatCurrencyPDF, getCurrencySymbol } from "@/lib/curr
 import { cn } from "@/lib/utils";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import SavedAnalyses from "@/components/SavedAnalyses";
 
 interface DbTable  { id: string; name: string; }
 interface DbColumn { id: string; table_id: string; name: string; type: string; }
@@ -38,7 +40,7 @@ function dayKey(dateStr: string) {
 }
 function toDMY(iso: string) { if (!iso) return ""; const d = new Date(iso + "T00:00:00"); if (isNaN(d.getTime())) return iso; return `${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}/${d.getFullYear()}`; }
 type ChartMode = "bar" | "line" | "pie" | "composed";
-type ViewMode = "tables" | "documents";
+type ViewMode = "tables" | "documents" | "analyses";
 type DocTypeFilter = "all" | "invoice" | "quotation" | "bill";
 
 const CustomTooltip = ({ active, payload, label, cur }: any) => {
@@ -191,7 +193,8 @@ export default function AnalyticsPage() {
   const [xAxisMap, setXAxisMap] = useState<Record<string, string>>({});
   const [chartMode, setChartMode] = useState<ChartMode>("bar");
   const [activeTable, setActiveTable] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>("tables");
+  const [sp] = useSearchParams();
+  const [viewMode, setViewMode] = useState<ViewMode>(sp.get("tab") === "analyses" ? "analyses" : "tables");
   const [docTypeFilter, setDocTypeFilter] = useState<DocTypeFilter>("all");
 
   useEffect(() => {
@@ -478,6 +481,36 @@ export default function AnalyticsPage() {
     );
   };
 
+  // ── Tables / Documents / Saved Analyses switch ────────────────────────────
+  const modeSwitch = (
+    <div className="flex items-center gap-0.5 bg-muted rounded-xl p-1 w-fit">
+      {([["tables","Tables",Table2],["documents","Documents",FileText],["analyses","Saved Analyses",BarChart2]] as const).map(([k, label, Icon]) => (
+        <button key={k} onClick={() => setViewMode(k as ViewMode)}
+          className={cn("flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all",
+            viewMode === k ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground")}>
+          <Icon className="w-3.5 h-3.5" />{label}
+        </button>
+      ))}
+    </div>
+  );
+
+  // Saved Analyses tab — Tables page se bani pivot analyses yahan dikhti hain
+  if (viewMode === "analyses") return (
+    <div className="space-y-6 pb-10">
+      <div>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
+            <TrendingUp className="w-4 h-4 text-blue-500" />
+          </div>
+          Analytics
+        </h1>
+        <p className="text-muted-foreground text-sm mt-1">Tables page se bani hui analyses</p>
+      </div>
+      {modeSwitch}
+      <SavedAnalyses />
+    </div>
+  );
+
   if (loading) return (
     <div className="flex items-center justify-center h-64">
       <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
@@ -493,6 +526,7 @@ export default function AnalyticsPage() {
         <h3 className="text-lg font-semibold">No data yet</h3>
         <p className="text-muted-foreground text-sm mt-1 max-w-xs">Set at least one column type to <strong>Amount (₹)</strong> on the Tables page, or create an invoice/quotation/bill, to see analytics.</p>
       </div>
+      <Button size="sm" variant="outline" onClick={() => setViewMode("analyses")}>Saved Analyses dekho</Button>
     </div>
   );
 
@@ -531,16 +565,8 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      {/* ── TABLES / DOCUMENTS SWITCH ── */}
-      <div className="flex items-center gap-0.5 bg-muted rounded-xl p-1 w-fit">
-        {([["tables","Tables",Table2],["documents","Documents",FileText]] as const).map(([k, label, Icon]) => (
-          <button key={k} onClick={() => setViewMode(k as ViewMode)}
-            className={cn("flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all",
-              viewMode === k ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground")}>
-            <Icon className="w-3.5 h-3.5" />{label}
-          </button>
-        ))}
-      </div>
+      {/* ── TABLES / DOCUMENTS / SAVED ANALYSES SWITCH ── */}
+      {modeSwitch}
 
       {/* ── SELECTOR ROW — table dropdown ya document-type dropdown ── */}
       {viewMode === "tables" ? (
