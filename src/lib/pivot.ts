@@ -1,25 +1,28 @@
 // src/lib/pivot.ts
-import { formatCurrency } from "@/lib/currency";
+import { formatCurrency, formatCurrencyPDF } from "@/lib/currency";
 
 export type Agg = "sum" | "average" | "count" | "min" | "max";
 
+export interface ValueSpec { col: string; agg: Agg }
+
 export interface PivotConfig {
-  rowCol: string;            // Rows (group by)
-  colCol?: string;           // Columns (optional split)
-  valueCol: string;          // Values field
-  agg: Agg;                  // Summarize by
-  filterCol?: string;        // Filter (optional)
-  filterVal?: string;
+  rowCols: string[];          // Rows — ek ya zyada (nested grouping)
+  colCols: string[];          // Columns — ek ya zyada (optional)
+  values: ValueSpec[];        // Values — ek ya zyada, har ek ka apna Sum/Average/...
+  filterCol?: string;         // Filter column (optional)
+  filterVals?: string[];      // Filter ki ek ya zyada values
   sort?: "none" | "asc" | "desc";
   currency?: boolean;
 }
 
+export interface SeriesInfo { key: string; label: string; agg: Agg }
 export interface PivotRow { label: string; values: Record<string, number | null>; total: number | null }
 export interface PivotResult {
-  series: string[];
+  series: SeriesInfo[];
   rows: PivotRow[];
   grand: Record<string, number | null>;
   grandTotal: number | null;
+  hasTotal: boolean;          // Total column tab hota hai jab Columns set ho aur Value sirf ek ho
 }
 
 export const AGG_LABELS: Record<Agg, string> = {
@@ -35,6 +38,22 @@ export const parseNum = (v: any): number | null => {
 };
 
 const clean = (v: any) => (v == null ? "" : String(v).trim());
+
+// Purani (single-field) saved analyses ko bhi naye format me badal deta hai
+export function normalizeConfig(c: any): PivotConfig {
+  const rowCols: string[] = c?.rowCols?.length ? c.rowCols : c?.rowCol ? [c.rowCol] : [];
+  const colCols: string[] = c?.colCols?.length ? c.colCols : c?.colCol ? [c.colCol] : [];
+  const values: ValueSpec[] = c?.values?.length ? c.values
+    : c?.valueCol ? [{ col: c.valueCol, agg: (c.agg ?? "sum") as Agg }] : [];
+  const filterVals: string[] = c?.filterVals?.length ? c.filterVals : c?.filterVal ? [c.filterVal] : [];
+  return {
+    rowCols, colCols, values,
+    filterCol: c?.filterCol || undefined,
+    filterVals,
+    sort: c?.sort ?? "none",
+    currency: !!c?.currency,
+  };
+}
 
 export function distinctValues(rows: Record<string, any>[], col: string, limit = 200): string[] {
   const s = new Set<string>();
@@ -61,70 +80,119 @@ function calc(a: Agg, c?: Cell): number | null {
   return c.nums.reduce((x, y) => (y > x ? y : x), c.nums[0]);
 }
 
-export function computePivot(rows: Record<string, any>[], cfg: PivotConfig): PivotResult {
-  const valueName = `${AGG_LABELS[cfg.agg]} of ${cfg.valueCol}`;
+const specLabel = (s: ValueSpec) => `${AGG_LABELS[s.agg]} of ${s.col}`;
+
+export function computePivot(rows: Record<string, any>[], rawCfg: any): PivotResult {
+  const cfg = normalizeConfig(rawCfg);
+  const specs = cfg.values;
+  const hasCols = cfg.colCols.length > 0;
+  const single = specs.length === 1;
+  const hasTotal = hasCols && single;
+
   const byRow = new Map<string, Map<string, Cell>>();
-  const rowTot = new Map<string, Cell>();
   const colTot = new Map<string, Cell>();
+  const rowTot = new Map<string, Cell>();
   const grand = newCell();
   const rowOrder: string[] = [];
   const colOrder: string[] = [];
-  const useFilter = !!cfg.filterCol && !!cfg.filterVal;
+  const fset = new Set(cfg.filterVals ?? []);
+  const useFilter = !!cfg.filterCol && fset.size > 0;
 
-  for (const r of rows) {
-    if (!r) continue;
-    if (useFilter && clean(r[cfg.filterCol!]) !== cfg.filterVal) continue;
-    const rk = clean(r[cfg.rowCol]);
-    // khaali label (AutoSum wali row) aur "Total" rows chhod do
-    if (!rk || /^total$/i.test(rk)) continue;
-    const raw = r[cfg.valueCol];
-    const n = parseNum(raw);
-    if (cfg.agg === "count" ? clean(raw) === "" : n === null) continue;
-    const ck = cfg.colCol ? (clean(r[cfg.colCol]) || "(blank)") : valueName;
+  if (cfg.rowCols.length && specs.length) {
+    for (const r of rows) {
+      if (!r) continue;
+      if (useFilter && !fset.has(clean(r[cfg.filterCol!]))) continue;
 
-    if (!byRow.has(rk)) { byRow.set(rk, new Map()); rowOrder.push(rk); }
-    if (!colTot.has(ck)) { colTot.set(ck, newCell()); colOrder.push(ck); }
-    if (!rowTot.has(rk)) rowTot.set(rk, newCell());
-    const rm = byRow.get(rk)!;
-    if (!rm.has(ck)) rm.set(ck, newCell());
+      const parts = cfg.rowCols.map(c => clean(r[c]));
+      // pehla label khaali (AutoSum wali row) ya "Total" ho to chhod do
+      if (!parts[0] || /^total$/i.test(parts[0])) continue;
+      const rk = parts.map(p => p || "(blank)").join(" › ");
+      const ckBase = hasCols ? cfg.colCols.map(c => clean(r[c]) || "(blank)").join(" › ") : "";
 
-    const nn = cfg.agg === "count" ? null : n;
-    addTo(rm.get(ck)!, nn); addTo(rowTot.get(rk)!, nn); addTo(colTot.get(ck)!, nn); addTo(grand, nn);
+      let rowAdded = false;
+      for (const sp of specs) {
+        const raw = r[sp.col];
+        const n = parseNum(raw);
+        if (sp.agg === "count" ? clean(raw) === "" : n === null) continue;
+
+        const key = hasCols ? (single ? ckBase : `${ckBase} · ${specLabel(sp)}`) : specLabel(sp);
+        const nn = sp.agg === "count" ? null : n;
+
+        if (!byRow.has(rk)) { byRow.set(rk, new Map()); rowOrder.push(rk); }
+        if (hasCols && !colOrder.includes(ckBase)) colOrder.push(ckBase);
+        const rm = byRow.get(rk)!;
+        if (!rm.has(key)) rm.set(key, newCell());
+        if (!colTot.has(key)) colTot.set(key, newCell());
+        addTo(rm.get(key)!, nn);
+        addTo(colTot.get(key)!, nn);
+        if (single) {
+          if (!rowTot.has(rk)) rowTot.set(rk, newCell());
+          addTo(rowTot.get(rk)!, nn);
+          addTo(grand, nn);
+        }
+        rowAdded = true;
+      }
+      void rowAdded;
+    }
   }
 
-  const series = colOrder.length ? colOrder : [valueName];
+  // series (columns of the pivot)
+  const series: SeriesInfo[] = [];
+  if (!hasCols) {
+    specs.forEach(sp => series.push({ key: specLabel(sp), label: specLabel(sp), agg: sp.agg }));
+  } else {
+    colOrder.forEach(cb => specs.forEach(sp => {
+      const k = single ? cb : `${cb} · ${specLabel(sp)}`;
+      series.push({ key: k, label: k, agg: sp.agg });
+    }));
+  }
+
   let out: PivotRow[] = rowOrder.map(rk => {
     const values: Record<string, number | null> = {};
-    series.forEach(s => { values[s] = calc(cfg.agg, byRow.get(rk)?.get(s)); });
-    return { label: rk, values, total: calc(cfg.agg, rowTot.get(rk)) };
+    series.forEach(s => { values[s.key] = calc(s.agg, byRow.get(rk)?.get(s.key)); });
+    return { label: rk, values, total: hasTotal ? calc(specs[0].agg, rowTot.get(rk)) : null };
   });
 
   if (cfg.sort === "asc" || cfg.sort === "desc") {
     const dir = cfg.sort === "asc" ? 1 : -1;
+    const keyOf = (r: PivotRow) => (hasTotal ? r.total : series[0] ? r.values[series[0].key] : null);
     out = [...out].sort((a, b) => {
-      if (a.total == null && b.total == null) return 0;
-      if (a.total == null) return 1;
-      if (b.total == null) return -1;
-      return (a.total - b.total) * dir;
+      const x = keyOf(a), y = keyOf(b);
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return (x - y) * dir;
     });
   }
 
   const grandVals: Record<string, number | null> = {};
-  series.forEach(s => { grandVals[s] = calc(cfg.agg, colTot.get(s)); });
-  return { series, rows: out, grand: grandVals, grandTotal: calc(cfg.agg, grand) };
+  series.forEach(s => { grandVals[s.key] = calc(s.agg, colTot.get(s.key)); });
+
+  return {
+    series, rows: out, grand: grandVals, hasTotal,
+    grandTotal: hasTotal ? calc(specs[0].agg, grand) : null,
+  };
 }
 
-export function describePivot(cfg: PivotConfig): string {
-  return `${AGG_LABELS[cfg.agg]} of ${cfg.valueCol} by ${cfg.rowCol}`
-    + (cfg.colCol ? ` × ${cfg.colCol}` : "")
-    + (cfg.filterCol && cfg.filterVal ? ` · ${cfg.filterCol} = ${cfg.filterVal}` : "");
+export function describePivot(rawCfg: any): string {
+  const c = normalizeConfig(rawCfg);
+  return `${c.values.map(specLabel).join(", ")} by ${c.rowCols.join(" › ")}`
+    + (c.colCols.length ? ` × ${c.colCols.join(" › ")}` : "")
+    + (c.filterCol && c.filterVals?.length ? ` · ${c.filterCol} = ${c.filterVals.join(", ")}` : "");
 }
 
-export const makeFormatter = (cfg: PivotConfig, cur: string) => (v: number | null | undefined) => {
-  if (v == null || !Number.isFinite(v)) return "–";
-  if (cfg.agg === "count") return v.toLocaleString("en-IN");
-  if (cfg.currency) return formatCurrency(v, cur);
-  return Number(v.toFixed(2)).toLocaleString("en-IN");
+const fmtWith = (cfgRaw: any, pdf: boolean, cur: string) => {
+  const cfg = normalizeConfig(cfgRaw);
+  const first = cfg.values[0]?.agg;
+  return (v: number | null | undefined, agg?: Agg) => {
+    if (v == null || !Number.isFinite(v)) return "–";
+    const a = agg ?? first;
+    if (a === "count") return v.toLocaleString("en-IN");
+    if (cfg.currency) return pdf ? formatCurrencyPDF(v, cur) : formatCurrency(v, cur);
+    return Number(v.toFixed(2)).toLocaleString("en-IN");
+  };
 };
+export const makeFormatter = (cfg: any, cur: string) => fmtWith(cfg, false, cur);
+export const makePdfFormatter = (cfg: any, cur: string) => fmtWith(cfg, true, cur);
 
 export const totalLabel = (a: Agg) => (a === "sum" || a === "count" ? "Grand Total" : `Overall ${AGG_LABELS[a]}`);
