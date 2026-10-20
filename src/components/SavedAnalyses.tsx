@@ -151,7 +151,7 @@ function AnalysisCard({ a, rows, tableName, cur, onDelete, onOpenTable }: {
               </tbody>
               <tfoot>
                 <tr className="border-t-2 bg-blue-600 text-white">
-                  <td className="px-3 py-2 text-xs font-bold">{cfg.values.length === 1 ? totalLabel(first!) : "Grand"}</td>
+                  <td className="px-3 py-2 text-xs font-bold">{cfg.values.length === 1 ? totalLabel(first!) : "Total"}</td>
                   {res.series.map(s => <td key={s.key} className="px-3 py-2 text-right text-xs font-bold tabular-nums">{fmt(res.grand[s.key], s.agg)}</td>)}
                   {res.hasTotal && <td className="px-3 py-2 text-right text-xs font-bold tabular-nums">{fmt(res.grandTotal, first)}</td>}
                 </tr>
