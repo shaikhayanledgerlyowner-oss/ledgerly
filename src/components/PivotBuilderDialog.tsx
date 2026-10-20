@@ -12,9 +12,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  AGG_LABELS, computePivot, describePivot, distinctValues, isSerialColumn, makeFormatter, parseNum, totalLabel,
+  computePivot, describePivot, distinctValues, isSerialColumn, makeFormatter, parseNum, totalLabel,
 } from "@/lib/pivot";
-import type { Agg, PivotConfig, ValueSpec } from "@/lib/pivot";
+import type { PivotConfig, ValueSpec } from "@/lib/pivot";
 
 const NONE = "__none__";
 const FIELD_LABEL = "text-[11px] font-semibold uppercase tracking-wide text-muted-foreground";
@@ -109,7 +109,6 @@ export default function PivotBuilderDialog({ open, onOpenChange, tableId, tableN
   const valueCols = values.map(v => v.col);
   const setValueCols = (cols: string[]) =>
     setValues(prev => cols.map(c => prev.find(p => p.col === c) ?? { col: c, agg: numericCols.includes(c) ? "sum" : "count" }));
-  const setAgg = (col: string, agg: Agg) => setValues(prev => prev.map(v => (v.col === col ? { ...v, agg } : v)));
 
   const cfg: PivotConfig = {
     rowCols, colCols, values,
@@ -130,7 +129,6 @@ export default function PivotBuilderDialog({ open, onOpenChange, tableId, tableN
     [rows, rowCols, colCols, values, filterCol, filterVals, sort],
   );
   const fmt = makeFormatter(cfg, cur);
-  const nonNumeric = values.filter(v => v.agg !== "count" && !numericCols.includes(v.col)).map(v => v.col);
 
   const save = async () => {
     if (!profile?.id) return;
@@ -169,41 +167,14 @@ export default function PivotBuilderDialog({ open, onOpenChange, tableId, tableN
                 placeholder={ready ? describePivot(cfg) : "Name"} />
             </div>
 
-            <MultiSelect label="Rows (group by)"
-              options={usableCols.filter(c => !colCols.includes(c) && !valueCols.includes(c))}
-              tag={o => (numericCols.includes(o) ? "123" : null)}
-              value={rowCols} onChange={setRowCols} placeholder="Column chuno"
-              hint="Jis ke hisaab se group karna hai (jaise Date, Customer). Amount wale columns yahan nahi, Values me chuno." />
+            <MultiSelect label="Rows" options={usableCols}
+              value={rowCols} onChange={setRowCols} placeholder="Column chuno" />
 
-            <MultiSelect label="Columns (optional)"
-              options={usableCols.filter(c => !rowCols.includes(c) && !valueCols.includes(c))}
-              tag={o => (numericCols.includes(o) ? "123" : null)}
+            <MultiSelect label="Columns (optional)" options={usableCols}
               value={colCols} onChange={setColCols} placeholder="None" />
 
-            <MultiSelect label="Values (fields)"
-              options={usableCols.filter(c => !rowCols.includes(c) && !colCols.includes(c))}
-              tag={o => (numericCols.includes(o) ? "123" : null)}
-              value={valueCols} onChange={setValueCols} placeholder="Column chuno"
-              hint="Jin ka Sum / Average chahiye (jaise Cash, Online, Amount)" />
-
-            {values.length > 0 && (
-              <div className="space-y-1.5 rounded-lg border bg-muted/20 p-2">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Summarize each by</p>
-                {values.map(v => (
-                  <div key={v.col} className="flex items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate text-xs font-medium">{v.col}</span>
-                    <Select value={v.agg} onValueChange={a => setAgg(v.col, a as Agg)}>
-                      <SelectTrigger className="h-7 w-28 text-xs"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {(Object.keys(AGG_LABELS) as Agg[]).map(a => (
-                          <SelectItem key={a} value={a} className="text-xs">{AGG_LABELS[a]}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                ))}
-              </div>
-            )}
+            <MultiSelect label="Values" options={usableCols}
+              value={valueCols} onChange={setValueCols} placeholder="Column chuno" />
 
             <div className="space-y-1">
               <Label className={FIELD_LABEL}>Filter (optional)</Label>
@@ -246,15 +217,10 @@ export default function PivotBuilderDialog({ open, onOpenChange, tableId, tableN
             <p className="text-xs text-muted-foreground">
               Preview: <span className="font-medium text-foreground">{ready ? describePivot(cfg) : "—"}</span>
             </p>
-            {nonNumeric.length > 0 && (
-              <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                {nonNumeric.map(c => `"${c}"`).join(", ")} me numbers nahi mile. Sum/Average ke liye number wala column chuno, ya Count use karo.
-              </p>
-            )}
             <div className="max-h-[460px] overflow-auto rounded-lg border">
               {!res || !res.rows.length ? (
                 <p className="px-4 py-12 text-center text-sm text-muted-foreground">
-                  {ready ? "Is selection me koi data nahi mila." : "Rows aur Values chuno — yahan preview dikhega."}
+                  {ready ? "Koi data nahi mila. Rows/Columns ke chune hue column me jo cell khaali hoti hai wo row hata di jati hai — kam columns chuno." : "Rows aur Values chuno — yahan preview dikhega."}
                 </p>
               ) : (
                 <table className="w-full text-sm">
@@ -276,7 +242,7 @@ export default function PivotBuilderDialog({ open, onOpenChange, tableId, tableN
                   </tbody>
                   <tfoot>
                     <tr className="border-t-2 bg-blue-600 text-white">
-                      <td className="px-3 py-2 text-xs font-bold">{values.length === 1 ? totalLabel(values[0].agg) : "Grand"}</td>
+                      <td className="px-3 py-2 text-xs font-bold">{values.length === 1 ? totalLabel(values[0].agg) : "Total"}</td>
                       {res.series.map(s => <td key={s.key} className="px-3 py-2 text-right text-xs font-bold tabular-nums">{fmt(res.grand[s.key], s.agg)}</td>)}
                       {res.hasTotal && <td className="px-3 py-2 text-right text-xs font-bold tabular-nums">{fmt(res.grandTotal, values[0].agg)}</td>}
                     </tr>
