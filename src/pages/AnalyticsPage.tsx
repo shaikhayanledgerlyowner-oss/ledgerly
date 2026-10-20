@@ -19,6 +19,8 @@ import { cn } from "@/lib/utils";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import SavedAnalyses from "@/components/SavedAnalyses";
+import type { LoadedAnalysis } from "@/components/SavedAnalyses";
+import { exportAnalysesPDF } from "@/lib/analysesPdf";
 
 interface DbTable  { id: string; name: string; }
 interface DbColumn { id: string; table_id: string; name: string; type: string; }
@@ -193,6 +195,7 @@ export default function AnalyticsPage() {
   const [chartMode, setChartMode] = useState<ChartMode>("bar");
   const [activeTable, setActiveTable] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("tables");
+  const [loadedAnalyses, setLoadedAnalyses] = useState<LoadedAnalysis[]>([]);
   const [docTypeFilter, setDocTypeFilter] = useState<DocTypeFilter>("all");
 
   useEffect(() => {
@@ -479,6 +482,13 @@ export default function AnalyticsPage() {
     );
   };
 
+  // ── Saved analyses ka PDF ─────────────────────────────────────────────────
+  const dlAnalyses = () => {
+    if (!hasAccess) return toast.error("Upgrade to download analytics");
+    if (!loadedAnalyses.length) return toast.error("Pehle Tables page par Create Analysis se koi analysis banao");
+    exportAnalysesPDF(loadedAnalyses, cur);
+  };
+
   // ── Tables / Documents switch ─────────────────────────────────────────────
   const modeSwitch = (
     <div className="flex items-center gap-0.5 bg-muted rounded-xl p-1 w-fit">
@@ -500,15 +510,22 @@ export default function AnalyticsPage() {
 
   if (!pivotData.length && !invoices.length) return (
     <div className="space-y-6 pb-10">
-      <h1 className="text-2xl font-bold flex items-center gap-2">
-        <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
-          <TrendingUp className="w-4 h-4 text-blue-500" />
-        </div>
-        Analytics
-      </h1>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
+            <TrendingUp className="w-4 h-4 text-blue-500" />
+          </div>
+          Analytics
+        </h1>
+        {loadedAnalyses.length > 0 && (
+          <Button size="sm" onClick={dlAnalyses} className="h-9 gap-2 text-xs bg-blue-600 hover:bg-blue-700 text-white">
+            <Download className="w-3.5 h-3.5" /> Download PDF
+          </Button>
+        )}
+      </div>
 
       {/* Tables page se bani analyses seedha yahan */}
-      <SavedAnalyses hideEmpty />
+      <SavedAnalyses hideEmpty onLoaded={setLoadedAnalyses} />
 
       <div className="flex flex-col items-center justify-center py-10 text-center gap-4">
         <div className="w-20 h-20 rounded-2xl bg-muted/50 flex items-center justify-center">
@@ -550,15 +567,29 @@ export default function AnalyticsPage() {
               </button>
             ))}
           </div>
-          <Button size="sm" onClick={() => dlPDF(activePD)}
-            className="h-9 gap-2 text-xs bg-blue-600 hover:bg-blue-700 text-white">
-            <Download className="w-3.5 h-3.5" /> Download PDF
-          </Button>
+          {loadedAnalyses.length > 0 ? (
+            <>
+              <Button size="sm" onClick={dlAnalyses}
+                className="h-9 gap-2 text-xs bg-blue-600 hover:bg-blue-700 text-white">
+                <Download className="w-3.5 h-3.5" /> Download PDF
+              </Button>
+              {activePD && (
+                <Button size="sm" variant="outline" onClick={() => dlPDF(activePD)} className="h-9 gap-2 text-xs">
+                  <Download className="w-3.5 h-3.5" /> {viewMode === "documents" ? "Documents" : "Table"} report PDF
+                </Button>
+              )}
+            </>
+          ) : (
+            <Button size="sm" onClick={() => dlPDF(activePD)}
+              className="h-9 gap-2 text-xs bg-blue-600 hover:bg-blue-700 text-white">
+              <Download className="w-3.5 h-3.5" /> Download PDF
+            </Button>
+          )}
         </div>
       </div>
 
       {/* ── TABLES PAGE SE BANI ANALYSES — seedha yahan dikhti hain ── */}
-      <SavedAnalyses hideEmpty />
+      <SavedAnalyses hideEmpty onLoaded={setLoadedAnalyses} />
 
       {/* ── TABLES / DOCUMENTS SWITCH ── */}
       {modeSwitch}
