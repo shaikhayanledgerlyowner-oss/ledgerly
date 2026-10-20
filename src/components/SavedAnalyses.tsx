@@ -11,12 +11,13 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { computePivot, describePivot, makeFormatter, totalLabel } from "@/lib/pivot";
-import type { PivotConfig } from "@/lib/pivot";
+import { computePivot, describePivot, makeFormatter, normalizeConfig, totalLabel } from "@/lib/pivot";
 
-interface Saved { id: string; table_id: string; name: string; config: PivotConfig; created_at: string }
+interface Saved { id: string; table_id: string; name: string; config: any; created_at: string }
 type Mode = "bar" | "line" | "pie";
 type RowData = Record<string, any>;
+
+export interface LoadedAnalysis { id: string; name: string; config: any; tableName: string; rows: RowData[] }
 
 const COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4", "#f97316", "#ec4899", "#84cc16", "#14b8a6"];
 const PAGE = 1000;
@@ -38,22 +39,27 @@ function AnalysisCard({ a, rows, tableName, cur, onDelete, onOpenTable }: {
   a: Saved; rows: RowData[]; tableName: string; cur: string;
   onDelete: () => void; onOpenTable: () => void;
 }) {
-  const cfg = a.config;
+  const cfg = useMemo(() => normalizeConfig(a.config), [a.config]);
   const res = useMemo(() => computePivot(rows, cfg), [rows, cfg]);
   const fmt = useMemo(() => makeFormatter(cfg, cur), [cfg, cur]);
   const [mode, setMode] = useState<Mode>("bar");
-  const multi = res.series.length > 1;
+  const first = cfg.values[0]?.agg;
 
   const data = useMemo(() => res.rows.map(r => ({ name: r.label, ...r.values })), [res]);
   const pie = useMemo(
-    () => res.rows.map(r => ({ name: r.label, value: r.total ?? 0 })).filter(d => d.value > 0),
+    () => res.rows.map(r => ({
+      name: r.label,
+      value: (res.hasTotal ? r.total : res.series[0] ? r.values[res.series[0].key] : 0) ?? 0,
+    })).filter(d => d.value > 0),
     [res],
   );
+  const aggByLabel = useMemo(() => Object.fromEntries(res.series.map(s => [s.key, s.agg])), [res]);
+  const multi = res.series.length > 1;
 
-  const tip = <Tooltip formatter={(v: any) => fmt(Number(v))} />;
+  const tip = <Tooltip formatter={(v: any, n: any) => fmt(Number(v), aggByLabel[String(n)])} />;
   const common = { data, margin: { top: 8, right: 16, bottom: 48, left: 8 } };
   const xAx = <XAxis dataKey="name" tick={{ fontSize: 10 }} tickLine={false} angle={-30} textAnchor="end" interval={0} />;
-  const yAx = <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} width={80} tickFormatter={v => fmt(Number(v))} />;
+  const yAx = <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} width={80} tickFormatter={v => fmt(Number(v), first)} />;
   const grid = <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />;
 
   return (
@@ -87,51 +93,67 @@ function AnalysisCard({ a, rows, tableName, cur, onDelete, onOpenTable }: {
       ) : (
         <div className="grid gap-5 p-5 lg:grid-cols-2">
           <div>
-            <p className="mb-3 text-xs text-muted-foreground">{totalLabel(cfg.agg)}</p>
-            <p className="mb-4 text-2xl font-bold tabular-nums">{fmt(res.grandTotal)}</p>
+            {res.hasTotal ? (
+              <>
+                <p className="mb-1 text-xs text-muted-foreground">{totalLabel(first!)}</p>
+                <p className="mb-4 text-2xl font-bold tabular-nums">{fmt(res.grandTotal, first)}</p>
+              </>
+            ) : (
+              <div className="mb-4 flex flex-wrap gap-x-6 gap-y-2">
+                {res.series.slice(0, 4).map(s => (
+                  <div key={s.key}>
+                    <p className="text-xs text-muted-foreground">{s.label}</p>
+                    <p className="text-lg font-bold tabular-nums">{fmt(res.grand[s.key], s.agg)}</p>
+                  </div>
+                ))}
+              </div>
+            )}
             <ResponsiveContainer width="100%" height={300}>
               {mode === "pie" ? (
                 <PieChart>
                   <Pie data={pie} dataKey="value" nameKey="name" cx="50%" cy="45%" outerRadius={100} innerRadius={42} paddingAngle={3}>
                     {pie.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
                   </Pie>
-                  {tip}<Legend wrapperStyle={{ fontSize: 10 }} />
+                  <Tooltip formatter={(v: any) => fmt(Number(v), first)} /><Legend wrapperStyle={{ fontSize: 10 }} />
                 </PieChart>
               ) : mode === "line" ? (
                 <LineChart {...common}>{grid}{xAx}{yAx}{tip}{multi && <Legend wrapperStyle={{ fontSize: 11 }} />}
-                  {res.series.map((s, i) => <Line key={s} type="monotone" dataKey={s} stroke={COLORS[i % COLORS.length]} strokeWidth={2.5} dot={{ r: 3 }} />)}
+                  {res.series.map((s, i) => <Line key={s.key} type="monotone" dataKey={s.key} stroke={COLORS[i % COLORS.length]} strokeWidth={2.5} dot={{ r: 3 }} />)}
                 </LineChart>
               ) : (
                 <BarChart {...common}>{grid}{xAx}{yAx}{tip}{multi && <Legend wrapperStyle={{ fontSize: 11 }} />}
-                  {res.series.map((s, i) => <Bar key={s} dataKey={s} fill={COLORS[i % COLORS.length]} radius={[6, 6, 0, 0]} maxBarSize={48} />)}
+                  {res.series.map((s, i) => <Bar key={s.key} dataKey={s.key} fill={COLORS[i % COLORS.length]} radius={[6, 6, 0, 0]} maxBarSize={48} />)}
                 </BarChart>
               )}
             </ResponsiveContainer>
+            {mode === "pie" && multi && !res.hasTotal && (
+              <p className="mt-1 text-center text-[11px] text-muted-foreground">Pie me pehli value ({res.series[0].label}) dikhayi gayi hai</p>
+            )}
           </div>
 
           <div className="max-h-[400px] min-w-0 overflow-auto rounded-lg border">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-muted/80 backdrop-blur">
                 <tr>
-                  <th className="px-3 py-2 text-left text-xs font-semibold">{cfg.rowCol}</th>
-                  {res.series.map(s => <th key={s} className="px-3 py-2 text-right text-xs font-semibold">{s}</th>)}
-                  {multi && <th className="px-3 py-2 text-right text-xs font-semibold">{totalLabel(cfg.agg)}</th>}
+                  <th className="px-3 py-2 text-left text-xs font-semibold">{cfg.rowCols.join(" › ")}</th>
+                  {res.series.map(s => <th key={s.key} className="px-3 py-2 text-right text-xs font-semibold">{s.label}</th>)}
+                  {res.hasTotal && <th className="px-3 py-2 text-right text-xs font-semibold">{totalLabel(first!)}</th>}
                 </tr>
               </thead>
               <tbody>
                 {res.rows.map(r => (
                   <tr key={r.label} className="border-t">
                     <td className="px-3 py-1.5 font-medium">{r.label}</td>
-                    {res.series.map(s => <td key={s} className="px-3 py-1.5 text-right tabular-nums">{fmt(r.values[s])}</td>)}
-                    {multi && <td className="px-3 py-1.5 text-right font-semibold tabular-nums">{fmt(r.total)}</td>}
+                    {res.series.map(s => <td key={s.key} className="px-3 py-1.5 text-right tabular-nums">{fmt(r.values[s.key], s.agg)}</td>)}
+                    {res.hasTotal && <td className="px-3 py-1.5 text-right font-semibold tabular-nums">{fmt(r.total, first)}</td>}
                   </tr>
                 ))}
               </tbody>
               <tfoot>
                 <tr className="border-t-2 bg-blue-600 text-white">
-                  <td className="px-3 py-2 text-xs font-bold">{totalLabel(cfg.agg)}</td>
-                  {res.series.map(s => <td key={s} className="px-3 py-2 text-right text-xs font-bold tabular-nums">{fmt(res.grand[s])}</td>)}
-                  {multi && <td className="px-3 py-2 text-right text-xs font-bold tabular-nums">{fmt(res.grandTotal)}</td>}
+                  <td className="px-3 py-2 text-xs font-bold">{cfg.values.length === 1 ? totalLabel(first!) : "Grand"}</td>
+                  {res.series.map(s => <td key={s.key} className="px-3 py-2 text-right text-xs font-bold tabular-nums">{fmt(res.grand[s.key], s.agg)}</td>)}
+                  {res.hasTotal && <td className="px-3 py-2 text-right text-xs font-bold tabular-nums">{fmt(res.grandTotal, first)}</td>}
                 </tr>
               </tfoot>
             </table>
@@ -142,7 +164,10 @@ function AnalysisCard({ a, rows, tableName, cur, onDelete, onOpenTable }: {
   );
 }
 
-export default function SavedAnalyses({ hideEmpty = false }: { hideEmpty?: boolean }) {
+export default function SavedAnalyses({ hideEmpty = false, onLoaded }: {
+  hideEmpty?: boolean;
+  onLoaded?: (list: LoadedAnalysis[]) => void;   // parent ko data milta hai (PDF export ke liye)
+}) {
   const { profile, userCurrency } = useAuth() as any;
   const navigate = useNavigate();
   const uid = profile?.id;
@@ -176,6 +201,16 @@ export default function SavedAnalyses({ hideEmpty = false }: { hideEmpty?: boole
   }, [uid]);
 
   useEffect(() => { load(); }, [load]);
+
+  // parent ko loaded analyses bhejo
+  useEffect(() => {
+    if (!onLoaded) return;
+    onLoaded(items.map(a => ({
+      id: a.id, name: a.name, config: a.config,
+      tableName: names[a.table_id] ?? "Table",
+      rows: rowsByTable[a.table_id] ?? [],
+    })));
+  }, [items, names, rowsByTable, onLoaded]);
 
   const remove = async (a: Saved) => {
     if (!window.confirm(`"${a.name}" delete karna hai?`)) return;
