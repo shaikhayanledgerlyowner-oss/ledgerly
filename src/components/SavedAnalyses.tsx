@@ -57,7 +57,7 @@ function AnalysisCard({ a, rows, tableName, cur, onDelete, onOpenTable }: {
   const multi = res.series.length > 1;
 
   const tip = <Tooltip formatter={(v: any, n: any) => fmt(Number(v), aggByLabel[String(n)])} />;
-  const common = { data, margin: { top: 8, right: 16, bottom: 48, left: 8 } };
+  const common = { data, margin: { top: 8, right: 16, bottom: 64, left: 8 } };
   const xAx = <XAxis dataKey="name" tick={{ fontSize: 10 }} tickLine={false} angle={-30} textAnchor="end" interval={0} />;
   const yAx = <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} width={80} tickFormatter={v => fmt(Number(v), first)} />;
   const grid = <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />;
@@ -117,11 +117,11 @@ function AnalysisCard({ a, rows, tableName, cur, onDelete, onOpenTable }: {
                   <Tooltip formatter={(v: any) => fmt(Number(v), first)} /><Legend wrapperStyle={{ fontSize: 10 }} />
                 </PieChart>
               ) : mode === "line" ? (
-                <LineChart {...common}>{grid}{xAx}{yAx}{tip}{multi && <Legend wrapperStyle={{ fontSize: 11 }} />}
+                <LineChart {...common}>{grid}{xAx}{yAx}{tip}{multi && <Legend verticalAlign="top" wrapperStyle={{ fontSize: 11, paddingBottom: 8 }} />}
                   {res.series.map((s, i) => <Line key={s.key} type="monotone" dataKey={s.key} stroke={COLORS[i % COLORS.length]} strokeWidth={2.5} dot={{ r: 3 }} />)}
                 </LineChart>
               ) : (
-                <BarChart {...common}>{grid}{xAx}{yAx}{tip}{multi && <Legend wrapperStyle={{ fontSize: 11 }} />}
+                <BarChart {...common}>{grid}{xAx}{yAx}{tip}{multi && <Legend verticalAlign="top" wrapperStyle={{ fontSize: 11, paddingBottom: 8 }} />}
                   {res.series.map((s, i) => <Bar key={s.key} dataKey={s.key} fill={COLORS[i % COLORS.length]} radius={[6, 6, 0, 0]} maxBarSize={48} />)}
                 </BarChart>
               )}
