@@ -152,7 +152,7 @@ export function exportAnalysesPDF(list: PdfAnalysis[], cur: string) {
       ...(res.hasTotal ? [fmt(r.total, first)] : []),
     ]);
     const foot = [[
-      cfg.values.length === 1 ? totalLabel(first!) : "Grand",
+      cfg.values.length === 1 ? totalLabel(first!) : "Total",
       ...res.series.map(s => fmt(res.grand[s.key], s.agg)),
       ...(res.hasTotal ? [fmt(res.grandTotal, first)] : []),
     ]];
