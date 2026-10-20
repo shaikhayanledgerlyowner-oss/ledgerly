@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  AGG_LABELS, computePivot, describePivot, distinctValues, makeFormatter, parseNum, totalLabel,
+  AGG_LABELS, computePivot, describePivot, distinctValues, isSerialColumn, makeFormatter, parseNum, totalLabel,
 } from "@/lib/pivot";
 import type { Agg, PivotConfig, ValueSpec } from "@/lib/pivot";
 
@@ -20,9 +20,9 @@ const NONE = "__none__";
 const FIELD_LABEL = "text-[11px] font-semibold uppercase tracking-wide text-muted-foreground";
 
 // ✅ Checkbox wali multi-select list — click karne ke order me select hota hai
-function MultiSelect({ label, options, value, onChange, placeholder = "Select…", hint }: {
+function MultiSelect({ label, options, value, onChange, placeholder = "Select…", hint, tag }: {
   label: string; options: string[]; value: string[]; onChange: (v: string[]) => void;
-  placeholder?: string; hint?: string;
+  placeholder?: string; hint?: string; tag?: (o: string) => string | null;
 }) {
   const toggle = (o: string) => onChange(value.includes(o) ? value.filter(x => x !== o) : [...value, o]);
   return (
@@ -45,6 +45,7 @@ function MultiSelect({ label, options, value, onChange, placeholder = "Select…
               <label key={o} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted">
                 <input type="checkbox" checked={value.includes(o)} onChange={() => toggle(o)} />
                 <span className="truncate">{o}</span>
+                {tag?.(o) && <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground">{tag(o)}</span>}
                 {value.includes(o) && value.length > 1 && (
                   <span className="ml-auto text-[10px] text-muted-foreground">#{value.indexOf(o) + 1}</span>
                 )}
@@ -87,10 +88,17 @@ export default function PivotBuilderDialog({ open, onOpenChange, tableId, tableN
     return v.length > 0 && v.filter(x => parseNum(x) !== null).length / v.length >= 0.6;
   }), [columns, rows]);
 
+  // "NO / Sr No / ID" jaise serial columns pivot me kaam ke nahi — list se hata diye
+  const usableCols = useMemo(() => {
+    const u = columns.filter(c => !isSerialColumn(c, rows));
+    return u.length ? u : columns;
+  }, [columns, rows]);
+
   useEffect(() => {
     if (!open) return;
-    const textFirst = columns.find(c => !numericCols.includes(c)) ?? columns[0] ?? "";
-    const val = numericCols.find(c => c !== textFirst) ?? numericCols[0] ?? columns[1] ?? columns[0] ?? "";
+    const usableNumeric = numericCols.filter(c => usableCols.includes(c));
+    const textFirst = usableCols.find(c => !numericCols.includes(c)) ?? usableCols[0] ?? "";
+    const val = usableNumeric.find(c => c !== textFirst) ?? usableCols.find(c => c !== textFirst) ?? "";
     setRowCols(textFirst ? [textFirst] : []);
     setColCols([]);
     setValues(val ? [{ col: val, agg: numericCols.includes(val) ? "sum" : "count" }] : []);
@@ -161,15 +169,22 @@ export default function PivotBuilderDialog({ open, onOpenChange, tableId, tableN
                 placeholder={ready ? describePivot(cfg) : "Name"} />
             </div>
 
-            <MultiSelect label="Rows (group by)" options={columns.filter(c => !colCols.includes(c))}
+            <MultiSelect label="Rows (group by)"
+              options={usableCols.filter(c => !colCols.includes(c) && !valueCols.includes(c))}
+              tag={o => (numericCols.includes(o) ? "123" : null)}
               value={rowCols} onChange={setRowCols} placeholder="Column chuno"
-              hint="Ek se zyada chuno to nested group banega (A › B)" />
+              hint="Jis ke hisaab se group karna hai (jaise Date, Customer). Amount wale columns yahan nahi, Values me chuno." />
 
-            <MultiSelect label="Columns (optional)" options={columns.filter(c => !rowCols.includes(c))}
+            <MultiSelect label="Columns (optional)"
+              options={usableCols.filter(c => !rowCols.includes(c) && !valueCols.includes(c))}
+              tag={o => (numericCols.includes(o) ? "123" : null)}
               value={colCols} onChange={setColCols} placeholder="None" />
 
-            <MultiSelect label="Values (fields)" options={columns}
-              value={valueCols} onChange={setValueCols} placeholder="Column chuno" />
+            <MultiSelect label="Values (fields)"
+              options={usableCols.filter(c => !rowCols.includes(c) && !colCols.includes(c))}
+              tag={o => (numericCols.includes(o) ? "123" : null)}
+              value={valueCols} onChange={setValueCols} placeholder="Column chuno"
+              hint="Jin ka Sum / Average chahiye (jaise Cash, Online, Amount)" />
 
             {values.length > 0 && (
               <div className="space-y-1.5 rounded-lg border bg-muted/20 p-2">
