@@ -107,6 +107,9 @@ const splitKey=(k:string)=>{const i=k.indexOf("__");return [k.slice(0,i),k.slice
 
 interface Ctx{x:number;y:number;rowId?:string;colId?:string;colName?:string;}
 
+type AggKind="sum"|"average"|"count"|"min"|"max";
+const AGG_TITLES:Record<AggKind,string>={sum:"Sum",average:"Average",count:"Count",min:"Min",max:"Max"};
+
 // ── SMART LAYOUT DETECTION (Excel / OCR dono ke liye) ────────────────────────
 // Problem: file me sabse upar "Medicine / Invoice Table" jaisa title hota hai,
 // uske neeche asli header (Sr. No., HSN ...). Pehle hum seedha pehli row ko
@@ -717,11 +720,16 @@ export default function TablesPage(){
       if(n!==null)nums.push(n);
     });
     const sum=nums.reduce((a,b)=>a+b,0);
-    return {count:selCells.size,numCount:nums.length,sum,avg:nums.length?sum/nums.length:0};
+    return {
+      count:selCells.size,numCount:nums.length,sum,avg:nums.length?sum/nums.length:0,
+      min:nums.length?nums.reduce((a,b)=>(b<a?b:a),nums[0]):0,
+      max:nums.length?nums.reduce((a,b)=>(b>a?b:a),nums[0]):0,
+    };
   },[selCells,rows]);
 
-  // ── AUTOSUM ───────────────────────────────────────────────────────────────
-  const doSum=async()=>{
+  // ── AUTOSUM (Sum / Average / Count / Min / Max) ───────────────────────────
+  // Selected cells ka result neeche wali row me likh deta hai (Excel ke AutoSum jaisa)
+  const doAgg=async(kind:AggKind)=>{
     if(!selCells.size)return toast.error("Pehle cells select karo (drag karo)");
     const byCol=new Map<string,number[]>();
     let maxIdx=-1;
@@ -743,22 +751,29 @@ export default function TablesPage(){
       target=nr;
     }
 
-    let done=0;
+    const results:number[]=[];
     for(const [cn,idxs] of byCol){
-      let total=0,found=0;
+      const nums:number[]=[];
       idxs.forEach(i=>{
         const n=parseNum(rowsRef.current[i]?.row_data?.[cn]);
-        if(n!==null){total+=n;found++;}
+        if(n!==null)nums.push(n);
       });
-      if(!found)continue;
+      if(!nums.length)continue;
+      const total=nums.reduce((a,b)=>a+b,0);
+      const result=
+        kind==="sum"?total:
+        kind==="average"?total/nums.length:
+        kind==="count"?nums.length:
+        kind==="min"?nums.reduce((a,b)=>(b<a?b:a),nums[0]):
+        nums.reduce((a,b)=>(b>a?b:a),nums[0]);
       const sample=String(rowsRef.current[idxs[0]]?.row_data?.[cn]??"");
-      const cur=sample.trim().startsWith("₹")?"₹":"";
-      saveCell(target.id,cn,`${cur}${Number(total.toFixed(2))}`);
+      const cur=kind!=="count"&&sample.trim().startsWith("₹")?"₹":"";
+      saveCell(target.id,cn,`${cur}${Number(result.toFixed(2))}`);
       setStyleMap(prev=>{const n={...prev};const key=ck(target!.id,cn);n[key]={...(n[key]??{}),bold:true};saveStyles(n);return n;});
-      done++;
+      results.push(result);
     }
-    if(!done)return toast.error("Selected cells me koi number nahi mila");
-    toast.success(`Σ Sum = ${Number(stats.sum.toFixed(2)).toLocaleString("en-IN")}`);
+    if(!results.length)return toast.error("Selected cells me koi number nahi mila");
+    toast.success(`${AGG_TITLES[kind]} = ${results.map(x=>Number(x.toFixed(2)).toLocaleString("en-IN")).join("  •  ")}`);
     setSelCells(new Set());
   };
 
@@ -1299,12 +1314,21 @@ export default function TablesPage(){
             </PopoverContent>
           </Popover>
 
-          {/* ══ SUM ══ */}
-          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1 text-blue-600 hover:bg-blue-50"
-            title="Selected cells ka total neeche wale cell me aa jayega"
-            onClick={doSum} disabled={!selTable||!columns.length}>
-            <Sigma className="w-3.5 h-3.5"/>Sum
-          </Button>
+          {/* ══ AUTOSUM: Sum / Average / Count / Min / Max ══ */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1 text-blue-600 hover:bg-blue-50"
+                title="Selected cells ka Sum / Average / Min / Max neeche wale cell me aa jayega"
+                disabled={!selTable||!columns.length}>
+                <Sigma className="w-3.5 h-3.5"/>AutoSum<ChevronDown className="w-3 h-3"/>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {(["sum","average","count","min","max"] as AggKind[]).map(k=>(
+                <DropdownMenuItem key={k} onClick={()=>doAgg(k)}>{AGG_TITLES[k]}</DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           {/* ══ CREATE ANALYSIS (pivot) ══ */}
           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1 text-emerald-600 hover:bg-emerald-50"
@@ -1626,6 +1650,8 @@ export default function TablesPage(){
             {!DR.current.active&&stats.numCount>0&&<>
               <span>Sum: {Number(stats.sum.toFixed(2)).toLocaleString("en-IN")}</span>
               <span>Average: {Number(stats.avg.toFixed(2)).toLocaleString("en-IN")}</span>
+              <span>Min: {Number(stats.min.toFixed(2)).toLocaleString("en-IN")}</span>
+              <span>Max: {Number(stats.max.toFixed(2)).toLocaleString("en-IN")}</span>
               <span>Count: {stats.numCount}</span>
             </>}
             {!DR.current.active&&stats.numCount===0&&stats.count>1&&<span>{stats.count} cells selected</span>}
