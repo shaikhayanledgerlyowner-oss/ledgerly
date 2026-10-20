@@ -89,7 +89,7 @@ function calc(a: Agg, c?: Cell): number | null {
   return c.nums.reduce((x, y) => (y > x ? y : x), c.nums[0]);
 }
 
-const specLabel = (s: ValueSpec) => `${AGG_LABELS[s.agg]} of ${s.col}`;
+const specLabel = (s: ValueSpec) => (s.agg === "sum" ? s.col : `${AGG_LABELS[s.agg]} of ${s.col}`);
 
 export function computePivot(rows: Record<string, any>[], rawCfg: any): PivotResult {
   const cfg = normalizeConfig(rawCfg);
@@ -112,11 +112,14 @@ export function computePivot(rows: Record<string, any>[], rawCfg: any): PivotRes
       if (!r) continue;
       if (useFilter && !fset.has(clean(r[cfg.filterCol!]))) continue;
 
+      // Rows/Columns ke chune hue column me koi bhi cell khaali ho (ya "Total" ho,
+      // jaise AutoSum wali row) to wo row pivot se hata di jati hai
       const parts = cfg.rowCols.map(c => clean(r[c]));
-      // pehla label khaali (AutoSum wali row) ya "Total" ho to chhod do
-      if (!parts[0] || /^total$/i.test(parts[0])) continue;
-      const rk = parts.filter(Boolean).join(" › ");
-      const ckBase = hasCols ? (cfg.colCols.map(c => clean(r[c])).filter(Boolean).join(" › ") || "Other") : "";
+      if (parts.some(p => !p) || /^total$/i.test(parts[0])) continue;
+      const colParts = cfg.colCols.map(c => clean(r[c]));
+      if (hasCols && colParts.some(p => !p)) continue;
+      const rk = parts.join(" › ");
+      const ckBase = hasCols ? colParts.join(" › ") : "";
 
       let rowAdded = false;
       for (const sp of specs) {
@@ -204,4 +207,4 @@ const fmtWith = (cfgRaw: any, pdf: boolean, cur: string) => {
 export const makeFormatter = (cfg: any, cur: string) => fmtWith(cfg, false, cur);
 export const makePdfFormatter = (cfg: any, cur: string) => fmtWith(cfg, true, cur);
 
-export const totalLabel = (a: Agg) => (a === "sum" || a === "count" ? "Grand Total" : `Overall ${AGG_LABELS[a]}`);
+export const totalLabel = (a: Agg) => (a === "sum" ? "Total" : a === "count" ? "Count" : `Overall ${AGG_LABELS[a]}`);
