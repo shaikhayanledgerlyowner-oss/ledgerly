@@ -55,6 +55,15 @@ export function normalizeConfig(c: any): PivotConfig {
   };
 }
 
+// "NO", "Sr No", "S.No", "ID" jaise serial-number columns — inka sum/average kaam ka nahi hota
+const SERIAL_NAME = /^(no\.?|sr\.?\s?no\.?|sl\.?\s?no\.?|s\.?\s?no\.?|sno|serial(\s?no\.?)?|id|#)$/i;
+export function isSerialColumn(name: string, rows: Record<string, any>[]): boolean {
+  if (SERIAL_NAME.test(name.trim())) return true;
+  const nums = rows.map(r => parseNum(r?.[name])).filter((x): x is number => x !== null);
+  if (nums.length < 3) return false;
+  return nums.every((x, i) => i === 0 || x === nums[i - 1] + 1);   // 1,2,3,4...
+}
+
 export function distinctValues(rows: Record<string, any>[], col: string, limit = 200): string[] {
   const s = new Set<string>();
   for (const r of rows) {
@@ -106,8 +115,8 @@ export function computePivot(rows: Record<string, any>[], rawCfg: any): PivotRes
       const parts = cfg.rowCols.map(c => clean(r[c]));
       // pehla label khaali (AutoSum wali row) ya "Total" ho to chhod do
       if (!parts[0] || /^total$/i.test(parts[0])) continue;
-      const rk = parts.map(p => p || "(blank)").join(" › ");
-      const ckBase = hasCols ? cfg.colCols.map(c => clean(r[c]) || "(blank)").join(" › ") : "";
+      const rk = parts.filter(Boolean).join(" › ");
+      const ckBase = hasCols ? (cfg.colCols.map(c => clean(r[c])).filter(Boolean).join(" › ") || "Other") : "";
 
       let rowAdded = false;
       for (const sp of specs) {
