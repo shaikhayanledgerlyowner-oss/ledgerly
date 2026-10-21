@@ -11,22 +11,59 @@ import {
   Plus, Minus, RectangleHorizontal, RectangleVertical, Ruler, Rows3, Columns3,
 } from "lucide-react";
 
-/* ─── Fix Word multi-section header/footer inheritance ───
-   Word reuses the previous section's header when a section has no explicit
-   reference ("same as previous"). docx-preview does NOT implement this,
-   so pages 2+ show a blank header. We patch the XML before rendering. */
+/* ─── Word package fixes ─────────────────────────────────────────────
+   1. Word multi-section header/footer inheritance ("same as previous").
+      docx-preview does not implement this, so pages 2+ show a blank header.
+   2. Some .docx files do not declare image extensions in [Content_Types].xml.
+      docx-preview then skips those images silently. We add the missing ones.
+   ─────────────────────────────────────────────────────────────────── */
 const WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
-async function normalizeSectionHeaders(buf: ArrayBuffer): Promise<ArrayBuffer> {
+const IMAGE_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  emf: "image/x-emf",
+  wmf: "image/x-wmf",
+};
+
+async function ensureImageContentTypes(zip: JSZip): Promise<void> {
+  const ctFile = zip.file("[Content_Types].xml");
+  if (!ctFile) return;
+  let ct = await ctFile.async("string");
+  const declared = new Set(
+    [...ct.matchAll(/Extension="([^"]+)"/gi)].map(m => m[1].toLowerCase())
+  );
+  const additions = Object.entries(IMAGE_MIME)
+    .filter(([ext]) => !declared.has(ext))
+    .map(([ext, type]) => `<Default Extension="${ext}" ContentType="${type}"/>`);
+  if (additions.length) {
+    ct = ct.replace("</Types>", additions.join("") + "</Types>");
+    zip.file("[Content_Types].xml", ct);
+  }
+}
+
+async function normalizeDocxPackage(buf: ArrayBuffer): Promise<ArrayBuffer> {
   try {
     const zip = await JSZip.loadAsync(buf);
+    await ensureImageContentTypes(zip);
+
     const path = "word/document.xml";
     const file = zip.file(path);
-    if (!file) return buf;
+    if (!file) return await zip.generateAsync({ type: "arraybuffer" });
+
     let xmlText = await file.async("string");
     if (xmlText.charCodeAt(0) === 0xFEFF) xmlText = xmlText.slice(1);
     const doc = new DOMParser().parseFromString(xmlText, "application/xml");
-    if (doc.getElementsByTagName("parsererror").length) return buf;
+    if (doc.getElementsByTagName("parsererror").length)
+      return await zip.generateAsync({ type: "arraybuffer" });
+
     const sectPrs = Array.from(doc.getElementsByTagNameNS(WORD_NS, "sectPr"));
     let lastHeaderRefs: Element[] = [];
     let lastFooterRefs: Element[] = [];
@@ -40,12 +77,27 @@ async function normalizeSectionHeaders(buf: ArrayBuffer): Promise<ArrayBuffer> {
       else if (lastFooterRefs.length > 0)
         lastFooterRefs.forEach(n => sectPr.insertBefore(n.cloneNode(true), sectPr.firstChild));
     }
-    const newXml = new XMLSerializer().serializeToString(doc);
-    zip.file(path, newXml);
+
+    zip.file(path, new XMLSerializer().serializeToString(doc));
     return await zip.generateAsync({ type: "arraybuffer" });
   } catch {
     return buf;
   }
+}
+
+/* Rendered output ko theek karo: sections ko relative rakho taaki floating
+   images unke page ke andar rahein, aur sirf bina size wali images ko max-width do. */
+function fixRenderedImages(root: HTMLElement) {
+  root.querySelectorAll<HTMLElement>("section.docx").forEach(s => {
+    s.style.position = "relative";
+  });
+  root.querySelectorAll<HTMLImageElement>("img").forEach(img => {
+    img.removeAttribute("loading");
+    const floating = !!img.closest('[style*="position: absolute"], [style*="position:absolute"]');
+    if (!floating && !img.getAttribute("width") && !img.style.width) {
+      img.style.maxWidth = "100%";
+    }
+  });
 }
 
 const FONTS = [
@@ -133,7 +185,7 @@ export default function DocumentEditorPage() {
   const currentCell  = () => nodeFrom(el => el.tagName==="TD"||el.tagName==="TH") as HTMLTableCellElement|null;
   const currentBlock = () => nodeFrom(el => ["P","DIV","LI","TD","TH","H1","H2","H3","H4"].includes(el.tagName));
 
-  /* ── Import .docx with header/footer fix ── */
+  /* ── Import .docx ── */
   const importDocx = async (file: File) => {
     if (!/\.docx?$/i.test(file.name)) { toast.error("Please choose a Word file (.docx)"); return; }
     const target = editorRef.current;
@@ -141,29 +193,25 @@ export default function DocumentEditorPage() {
     setLoading(true);
     try {
       const rawBuf = await file.arrayBuffer();
-      // Patch: propagate header/footer refs to all sections
-      const buf = await normalizeSectionHeaders(rawBuf);
+      const buf = await normalizeDocxPackage(rawBuf);
       target.innerHTML = "";
       await renderAsync(buf, target, target, {
-        className:          "docx",
-        inWrapper:          true,
-        ignoreWidth:        false,
-        ignoreHeight:       false,
-        ignoreFonts:        false,
-        breakPages:         true,
-        renderHeaders:      true,
-        renderFooters:      true,
-        renderFootnotes:    true,
-        renderEndnotes:     true,
-        renderChanges:      false,
-        useBase64URL:       true,   // embeds images as data URLs
-        experimental:       true,
+        className:       "docx",
+        inWrapper:       true,
+        ignoreWidth:     false,
+        ignoreHeight:    false,
+        ignoreFonts:     false,
+        breakPages:      true,
+        renderHeaders:   true,
+        renderFooters:   true,
+        renderFootnotes: true,
+        renderEndnotes:  true,
+        renderChanges:   false,
+        useBase64URL:    true,
+        experimental:    true,
+        debug:           true,
       });
-      // Ensure all images display
-      target.querySelectorAll("img").forEach(img => {
-        img.removeAttribute("loading");
-        if (!img.getAttribute("width") && !img.style.width) img.style.maxWidth = "100%";
-      });
+      fixRenderedImages(target);
       setKeepDocLayout(true);
       setFileName(file.name.replace(/\.docx?$/i, ""));
       setDirty(false);
@@ -585,6 +633,8 @@ table{border-collapse:collapse}
           box-shadow: 0 1px 6px rgba(0,0,0,.18);
           margin: 0 auto 24px auto;
           box-sizing: border-box;
+          position: relative;
+          overflow: visible;
         }
         .doc-surface .page {
           width: ${paperW}px;
@@ -599,7 +649,7 @@ table{border-collapse:collapse}
         }
         .doc-surface table  { border-collapse: collapse; }
         .doc-surface td, .doc-surface th { vertical-align: top; }
-        .doc-surface img    { max-width: 100%; height: auto; }
+        .doc-surface img    { max-width: 100%; height: auto; display: inline-block; }
         .doc-surface svg,
         .doc-surface v\\:shape,
         .doc-surface v\\:imagedata { max-width: 100%; }
