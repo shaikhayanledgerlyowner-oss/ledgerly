@@ -107,8 +107,8 @@ const splitKey=(k:string)=>{const i=k.indexOf("__");return [k.slice(0,i),k.slice
 
 interface Ctx{x:number;y:number;rowId?:string;colId?:string;colName?:string;}
 
-type AggKind="sum"|"average"|"count"|"min"|"max";
-const AGG_TITLES:Record<AggKind,string>={sum:"Sum",average:"Average",count:"Count",min:"Min",max:"Max"};
+type AggKind="sum"|"average"|"min"|"max";   // Count ke liye EasyCount hai
+const AGG_TITLES:Record<AggKind,string>={sum:"Sum",average:"Average",min:"Min",max:"Max"};
 
 // ── SMART LAYOUT DETECTION (Excel / OCR dono ke liye) ────────────────────────
 // Problem: file me sabse upar "Medicine / Invoice Table" jaisa title hota hai,
@@ -353,6 +353,9 @@ export default function TablesPage(){
   const [fbar,setFbar]=useState("");
   const [acSugg,setAcSugg]=useState("");
   const origRef=useRef("");
+  // ✅ jo cell me abhi type/backspace hua par save nahi hua — cell badalte hi save ho jata hai
+  const pendingEdit=useRef<{rowId:string;colName:string;val:string}|null>(null);
+  const touched=useRef(false);   // cell me kuch type kiya? (nahi kiya to arrow keys seedha cell badalte hain)
   const editValRef=useRef("");
   const cellRefs=useRef<Record<string,HTMLInputElement|null>>({});
   const colsRef=useRef<DbColumn[]>([]);
@@ -415,6 +418,13 @@ export default function TablesPage(){
 
   useEffect(()=>{editValRef.current=editVal;},[editVal]);
   useEffect(()=>{colsRef.current=columns;},[columns]);
+  useEffect(()=>{
+    const p=pendingEdit.current;
+    if(p&&!(editCell&&editCell.rowId===p.rowId&&editCell.colName===p.colName)){
+      saveCell(p.rowId,p.colName,p.val);
+      pendingEdit.current=null;
+    }
+  },[editCell]);
 
   // input render hone tak thoda retry karta hai (naya row turant add hota hai)
   const focusCell=(rid:string,cn:string)=>{
@@ -600,6 +610,7 @@ export default function TablesPage(){
     const raw=(row?.row_data??{})[colName];
     const sv=raw==null?"":String(raw);
     origRef.current=sv;
+    touched.current=false;
     setEditCell({rowId,colName});
     setEditVal(sv);
     setFbar(sv);
@@ -611,6 +622,8 @@ export default function TablesPage(){
   // ✅ synchronous — state turant badalta hai, DB save queue me jaata hai.
   // Value same ho to kuch nahi karta (blur + Enter ka double-save khatam).
   const saveCell=(rowId:string,colName:string,val:string,skipHistory=false):void=>{
+    const pe=pendingEdit.current;
+    if(pe&&pe.rowId===rowId&&pe.colName===colName)pendingEdit.current=null;
     const row=allRowsRef.current.find(r=>r.id===rowId);
     if(!row)return;
     const oldVal=row.row_data?.[colName]??"";
@@ -688,7 +701,7 @@ export default function TablesPage(){
   },[]);
 
   // ✅ Enter/Tab/Arrow: save background me, cursor TURANT aage
-  const moveCell=(rowId:string,colName:string,val:string,dir:"right"|"left"|"down"|"up")=>{
+  const moveCell=(rowId:string,colName:string,val:string,dir:"right"|"left"|"down"|"up"|"home"|"end")=>{
     saveCell(rowId,colName,val);
     setEditCell(null);setEditVal("");setFbar("");setAcSugg("");
     const cols=colsRef.current,list=rowsRef.current;
@@ -696,6 +709,8 @@ export default function TablesPage(){
     let nr=ri,nc=ci;
     if(dir==="right")nc=Math.min(ci+1,cols.length-1);
     else if(dir==="left")nc=Math.max(ci-1,0);
+    else if(dir==="home")nc=0;
+    else if(dir==="end")nc=cols.length-1;
     else if(dir==="down"){
       nr=ri+1;
       if(nr>=list.length){
@@ -763,11 +778,10 @@ export default function TablesPage(){
       const result=
         kind==="sum"?total:
         kind==="average"?total/nums.length:
-        kind==="count"?nums.length:
         kind==="min"?nums.reduce((a,b)=>(b<a?b:a),nums[0]):
         nums.reduce((a,b)=>(b>a?b:a),nums[0]);
       const sample=String(rowsRef.current[idxs[0]]?.row_data?.[cn]??"");
-      const cur=kind!=="count"&&sample.trim().startsWith("₹")?"₹":"";
+      const cur=sample.trim().startsWith("₹")?"₹":"";
       saveCell(target.id,cn,`${cur}${Number(result.toFixed(2))}`);
       setStyleMap(prev=>{const n={...prev};const key=ck(target!.id,cn);n[key]={...(n[key]??{}),bold:true};saveStyles(n);return n;});
       results.push(result);
@@ -1324,7 +1338,7 @@ export default function TablesPage(){
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
-              {(["sum","average","count","min","max"] as AggKind[]).map(k=>(
+              {(["sum","average","min","max"] as AggKind[]).map(k=>(
                 <DropdownMenuItem key={k} onClick={()=>doAgg(k)}>{AGG_TITLES[k]}</DropdownMenuItem>
               ))}
             </DropdownMenuContent>
@@ -1353,11 +1367,11 @@ export default function TablesPage(){
           <div className="w-px h-4 bg-border"/>
           <Input className="h-6 text-xs font-mono border-0 bg-transparent focus-visible:ring-0 p-0 flex-1" placeholder="Click a cell..."
             value={fbar}
-            onChange={e=>{setFbar(e.target.value);if(editCell)setEditVal(e.target.value);}}
+            onChange={e=>{setFbar(e.target.value);if(editCell){setEditVal(e.target.value);pendingEdit.current={rowId:editCell.rowId,colName:editCell.colName,val:e.target.value};touched.current=true;}}}
             onKeyDown={async e=>{
               if(!editCell)return;
               if(e.key==="Enter"){e.preventDefault();moveCell(editCell.rowId,editCell.colName,editValRef.current,"down");}
-              if(e.key==="Escape"){setEditVal(origRef.current);setFbar(origRef.current);setEditCell(null);}
+              if(e.key==="Escape"){pendingEdit.current=null;setEditVal(origRef.current);setFbar(origRef.current);setEditCell(null);}
             }}
           />
         </div>
@@ -1562,20 +1576,35 @@ export default function TablesPage(){
                                   value={editVal}
                                   onChange={e=>{
                                     const v=e.target.value;setEditVal(v);setFbar(v);
+                                    pendingEdit.current={rowId:r.id,colName:col.name,val:v};
+                                    touched.current=true;
                                     setAcSugg(getAC(col.name,v,r.id));
                                   }}
                                   onBlur={()=>{
-                                    saveCell(r.id,col.name,editValRef.current);
+                                    const pe=pendingEdit.current;
+                                    saveCell(r.id,col.name,pe&&pe.rowId===r.id&&pe.colName===col.name?pe.val:editValRef.current);
                                     setEditCell(null);setEditVal("");setFbar("");setAcSugg("");
                                   }}
                                   enterKeyHint="next"
                                   onKeyDown={e=>{
                                     if((e.key==="Tab"||e.key==="ArrowRight")&&acSugg){e.preventDefault();setEditVal(acSugg);setFbar(acSugg);setAcSugg("");if(e.key==="Tab")moveCell(r.id,col.name,acSugg,"right");return;}
+                                    {
+                                      // ← → Home End: abhi kuch type nahi kiya (ya caret kinare par hai) to cell badal jata hai
+                                      const el=e.currentTarget;
+                                      const len=el.value.length,ss=el.selectionStart??0,se=el.selectionEnd??0;
+                                      const plain=!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!e.altKey;
+                                      const fresh=!touched.current,allSel=ss===0&&se===len;
+                                      const atStart=ss===0&&se===0,atEnd=ss===len&&se===len;
+                                      if(plain&&e.key==="ArrowLeft"&&(fresh||allSel||atStart)){e.preventDefault();moveCell(r.id,col.name,editVal,"left");return;}
+                                      if(plain&&e.key==="ArrowRight"&&(fresh||allSel||atEnd)){e.preventDefault();moveCell(r.id,col.name,editVal,"right");return;}
+                                      if(plain&&e.key==="Home"&&(fresh||allSel||atStart)){e.preventDefault();moveCell(r.id,col.name,editVal,"home");return;}
+                                      if(plain&&e.key==="End"&&(fresh||allSel||atEnd)){e.preventDefault();moveCell(r.id,col.name,editVal,"end");return;}
+                                    }
                                     if(e.key==="Enter"){e.preventDefault();if(acSugg){setEditVal(acSugg);moveCell(r.id,col.name,acSugg,"down");return;}moveCell(r.id,col.name,editVal,"down");return;}
                                     if(e.key==="Tab"){e.preventDefault();moveCell(r.id,col.name,editVal,e.shiftKey?"left":"right");return;}
                                     if(e.key==="ArrowDown"){e.preventDefault();moveCell(r.id,col.name,editVal,"down");return;}
                                     if(e.key==="ArrowUp"){e.preventDefault();moveCell(r.id,col.name,editVal,"up");return;}
-                                    if(e.key==="Escape"){e.preventDefault();setEditVal(origRef.current);setFbar(origRef.current);setEditCell(null);setAcSugg("");return;}
+                                    if(e.key==="Escape"){e.preventDefault();pendingEdit.current=null;setEditVal(origRef.current);setFbar(origRef.current);setEditCell(null);setAcSugg("");return;}
                                     if(e.key.length===1)setAcSugg("");
                                   }}
                                   className="absolute inset-0 h-full w-full border-0 rounded-none bg-background text-xs px-2 focus-visible:ring-0 z-10"
