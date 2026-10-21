@@ -1,5 +1,5 @@
 // src/components/PivotBuilderDialog.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { BarChart3, ChevronDown } from "lucide-react";
@@ -9,7 +9,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   computePivot, describePivot, distinctValues, isSerialColumn, makeFormatter, parseNum, totalLabel,
@@ -19,33 +18,44 @@ import type { PivotConfig, ValueSpec } from "@/lib/pivot";
 const NONE = "__none__";
 const FIELD_LABEL = "text-[11px] font-semibold uppercase tracking-wide text-muted-foreground";
 
-// ✅ Checkbox wali multi-select list — click karne ke order me select hota hai
-function MultiSelect({ label, options, value, onChange, placeholder = "Select…", hint, tag }: {
+// ✅ Checkbox wali multi-select list. Dialog ke andar hi khulti hai (portal nahi),
+// isliye mouse wheel / touchpad se scroll sahi chalta hai.
+function MultiSelect({ label, options, value, onChange, placeholder = "Select…", hint }: {
   label: string; options: string[]; value: string[]; onChange: (v: string[]) => void;
-  placeholder?: string; hint?: string; tag?: (o: string) => string | null;
+  placeholder?: string; hint?: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
   const toggle = (o: string) => onChange(value.includes(o) ? value.filter(x => x !== o) : [...value, o]);
+
   return (
-    <div className="space-y-1">
+    <div ref={ref} className="relative space-y-1">
       <Label className={FIELD_LABEL}>{label}</Label>
-      <Popover>
-        <PopoverTrigger asChild>
-          <button type="button"
-            className="flex h-8 w-full items-center justify-between gap-2 rounded-md border bg-background px-2 text-left text-xs">
-            <span className={value.length ? "truncate" : "truncate text-muted-foreground"}>
-              {value.length ? value.join(", ") : placeholder}
-            </span>
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-64 p-1">
-          <div className="max-h-60 overflow-auto">
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="flex h-8 w-full items-center justify-between gap-2 rounded-md border bg-background px-2 text-left text-xs">
+        <span className={value.length ? "truncate" : "truncate text-muted-foreground"}>
+          {value.length ? value.join(", ") : placeholder}
+        </span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
+      </button>
+      {open && (
+        <div className="absolute left-0 right-0 z-50 rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
+          <div className="max-h-56 overflow-y-auto overscroll-contain">
             {options.length === 0 && <p className="px-2 py-3 text-xs text-muted-foreground">Koi option nahi</p>}
             {options.map(o => (
               <label key={o} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted">
                 <input type="checkbox" checked={value.includes(o)} onChange={() => toggle(o)} />
                 <span className="truncate">{o}</span>
-                {tag?.(o) && <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground">{tag(o)}</span>}
                 {value.includes(o) && value.length > 1 && (
                   <span className="ml-auto text-[10px] text-muted-foreground">#{value.indexOf(o) + 1}</span>
                 )}
@@ -58,8 +68,8 @@ function MultiSelect({ label, options, value, onChange, placeholder = "Select…
               ✕ Clear all
             </button>
           )}
-        </PopoverContent>
-      </Popover>
+        </div>
+      )}
       {hint && <p className="text-[10px] text-muted-foreground">{hint}</p>}
     </div>
   );
@@ -220,7 +230,7 @@ export default function PivotBuilderDialog({ open, onOpenChange, tableId, tableN
             <div className="max-h-[460px] overflow-auto rounded-lg border">
               {!res || !res.rows.length ? (
                 <p className="px-4 py-12 text-center text-sm text-muted-foreground">
-                  {ready ? "Koi data nahi mila. Rows/Columns ke chune hue column me jo cell khaali hoti hai wo row hata di jati hai — kam columns chuno." : "Rows aur Values chuno — yahan preview dikhega."}
+                  {ready ? "Koi data nahi mila — Rows aur Values ke columns check karo." : "Rows aur Values chuno — yahan preview dikhega."}
                 </p>
               ) : (
                 <table className="w-full text-sm">
