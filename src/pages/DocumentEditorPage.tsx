@@ -12,10 +12,9 @@ import {
 } from "lucide-react";
 
 /* ─── Word package fixes ─────────────────────────────────────────────
-   1. Word multi-section header/footer inheritance ("same as previous").
-      docx-preview does not implement this, so pages 2+ show a blank header.
-   2. Some .docx files do not declare image extensions in [Content_Types].xml.
-      docx-preview then skips those images silently. We add the missing ones.
+   1. Multi-section header/footer inheritance ("same as previous").
+   2. Image extensions missing from [Content_Types].xml (only added if used).
+   The zip is rebuilt ONLY if something actually changed.
    ─────────────────────────────────────────────────────────────────── */
 const WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
@@ -33,60 +32,75 @@ const IMAGE_MIME: Record<string, string> = {
   wmf: "image/x-wmf",
 };
 
-async function ensureImageContentTypes(zip: JSZip): Promise<void> {
+async function ensureImageContentTypes(zip: JSZip): Promise<boolean> {
   const ctFile = zip.file("[Content_Types].xml");
-  if (!ctFile) return;
+  if (!ctFile) return false;
   let ct = await ctFile.async("string");
   const declared = new Set(
-    [...ct.matchAll(/Extension="([^"]+)"/gi)].map(m => m[1].toLowerCase())
+    [...ct.matchAll(/<Default[^>]*Extension="([^"]+)"/gi)].map(m => m[1].toLowerCase())
   );
-  const additions = Object.entries(IMAGE_MIME)
-    .filter(([ext]) => !declared.has(ext))
-    .map(([ext, type]) => `<Default Extension="${ext}" ContentType="${type}"/>`);
-  if (additions.length) {
-    ct = ct.replace("</Types>", additions.join("") + "</Types>");
-    zip.file("[Content_Types].xml", ct);
-  }
+  const used = new Set<string>();
+  zip.forEach(p => {
+    if (/^word\/media\//i.test(p)) {
+      const ext = p.split(".").pop()?.toLowerCase();
+      if (ext) used.add(ext);
+    }
+  });
+  const additions = [...used]
+    .filter(ext => IMAGE_MIME[ext] && !declared.has(ext))
+    .map(ext => `<Default Extension="${ext}" ContentType="${IMAGE_MIME[ext]}"/>`);
+  if (!additions.length) return false;
+  ct = ct.replace(/(<Types[^>]*>)/, `$1${additions.join("")}`);
+  zip.file("[Content_Types].xml", ct);
+  return true;
 }
 
 async function normalizeDocxPackage(buf: ArrayBuffer): Promise<ArrayBuffer> {
   try {
     const zip = await JSZip.loadAsync(buf);
-    await ensureImageContentTypes(zip);
+    let changed = await ensureImageContentTypes(zip);
 
     const path = "word/document.xml";
     const file = zip.file(path);
-    if (!file) return await zip.generateAsync({ type: "arraybuffer" });
-
-    let xmlText = await file.async("string");
-    if (xmlText.charCodeAt(0) === 0xFEFF) xmlText = xmlText.slice(1);
-    const doc = new DOMParser().parseFromString(xmlText, "application/xml");
-    if (doc.getElementsByTagName("parsererror").length)
-      return await zip.generateAsync({ type: "arraybuffer" });
-
-    const sectPrs = Array.from(doc.getElementsByTagNameNS(WORD_NS, "sectPr"));
-    let lastHeaderRefs: Element[] = [];
-    let lastFooterRefs: Element[] = [];
-    for (const sectPr of sectPrs) {
-      const headerRefs = Array.from(sectPr.getElementsByTagNameNS(WORD_NS, "headerReference"));
-      const footerRefs = Array.from(sectPr.getElementsByTagNameNS(WORD_NS, "footerReference"));
-      if (headerRefs.length > 0) lastHeaderRefs = headerRefs;
-      else if (lastHeaderRefs.length > 0)
-        lastHeaderRefs.forEach(n => sectPr.insertBefore(n.cloneNode(true), sectPr.firstChild));
-      if (footerRefs.length > 0) lastFooterRefs = footerRefs;
-      else if (lastFooterRefs.length > 0)
-        lastFooterRefs.forEach(n => sectPr.insertBefore(n.cloneNode(true), sectPr.firstChild));
+    if (file) {
+      let xmlText = await file.async("string");
+      if (xmlText.charCodeAt(0) === 0xFEFF) xmlText = xmlText.slice(1);
+      const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+      if (!doc.getElementsByTagName("parsererror").length) {
+        const sectPrs = Array.from(doc.getElementsByTagNameNS(WORD_NS, "sectPr"));
+        let lastHeaderRefs: Element[] = [];
+        let lastFooterRefs: Element[] = [];
+        let headersChanged = false;
+        for (const sectPr of sectPrs) {
+          const headerRefs = Array.from(sectPr.getElementsByTagNameNS(WORD_NS, "headerReference"));
+          const footerRefs = Array.from(sectPr.getElementsByTagNameNS(WORD_NS, "footerReference"));
+          if (headerRefs.length > 0) lastHeaderRefs = headerRefs;
+          else if (lastHeaderRefs.length > 0) {
+            lastHeaderRefs.forEach(n => sectPr.insertBefore(n.cloneNode(true), sectPr.firstChild));
+            headersChanged = true;
+          }
+          if (footerRefs.length > 0) lastFooterRefs = footerRefs;
+          else if (lastFooterRefs.length > 0) {
+            lastFooterRefs.forEach(n => sectPr.insertBefore(n.cloneNode(true), sectPr.firstChild));
+            headersChanged = true;
+          }
+        }
+        if (headersChanged) {
+          zip.file(path, new XMLSerializer().serializeToString(doc));
+          changed = true;
+        }
+      }
     }
 
-    zip.file(path, new XMLSerializer().serializeToString(doc));
+    if (!changed) return buf;
     return await zip.generateAsync({ type: "arraybuffer" });
   } catch {
     return buf;
   }
 }
 
-/* Rendered output ko theek karo: sections ko relative rakho taaki floating
-   images unke page ke andar rahein, aur sirf bina size wali images ko max-width do. */
+/* Render ke baad: sections ko relative rakho taaki floating images apne page
+   ke andar rahein, aur sirf bina size wali images ko max-width do. */
 function fixRenderedImages(root: HTMLElement) {
   root.querySelectorAll<HTMLElement>("section.docx").forEach(s => {
     s.style.position = "relative";
@@ -185,40 +199,58 @@ export default function DocumentEditorPage() {
   const currentCell  = () => nodeFrom(el => el.tagName==="TD"||el.tagName==="TH") as HTMLTableCellElement|null;
   const currentBlock = () => nodeFrom(el => ["P","DIV","LI","TD","TH","H1","H2","H3","H4"].includes(el.tagName));
 
-  /* ── Import .docx ── */
+  /* ── Import .docx (with fallbacks) ── */
   const importDocx = async (file: File) => {
-    if (!/\.docx?$/i.test(file.name)) { toast.error("Please choose a Word file (.docx)"); return; }
+    if (!/\.docx$/i.test(file.name)) {
+      toast.error(/\.doc$/i.test(file.name)
+        ? "Purani .doc file support nahi hai. Word mein 'Save As → .docx' karke upload karein"
+        : "Please choose a Word file (.docx)");
+      return;
+    }
     const target = editorRef.current;
     if (!target) return;
     setLoading(true);
+
+    const baseOpts = {
+      className: "docx", inWrapper: true, ignoreWidth: false, ignoreHeight: false,
+      ignoreFonts: false, breakPages: true, renderHeaders: true, renderFooters: true,
+      renderFootnotes: true, renderEndnotes: true, renderChanges: false,
+      useBase64URL: true,
+    };
+
     try {
       const rawBuf = await file.arrayBuffer();
-      const buf = await normalizeDocxPackage(rawBuf);
-      target.innerHTML = "";
-      await renderAsync(buf, target, target, {
-        className:       "docx",
-        inWrapper:       true,
-        ignoreWidth:     false,
-        ignoreHeight:    false,
-        ignoreFonts:     false,
-        breakPages:      true,
-        renderHeaders:   true,
-        renderFooters:   true,
-        renderFootnotes: true,
-        renderEndnotes:  true,
-        renderChanges:   false,
-        useBase64URL:    true,
-        experimental:    true,
-        debug:           true,
-      });
-      fixRenderedImages(target);
+      const attempts: { buf: () => Promise<ArrayBuffer> | ArrayBuffer; opts: any; label: string }[] = [
+        { buf: () => normalizeDocxPackage(rawBuf), opts: { ...baseOpts, experimental: true }, label: "patched" },
+        { buf: () => rawBuf, opts: { ...baseOpts, experimental: true }, label: "original" },
+        { buf: () => rawBuf, opts: { ...baseOpts, experimental: false, renderFootnotes: false, renderEndnotes: false }, label: "simple" },
+      ];
+
+      let lastErr: unknown = null;
+      let ok = false;
+      for (const a of attempts) {
+        try {
+          target.innerHTML = "";
+          await renderAsync(await a.buf(), target, target, a.opts);
+          ok = true;
+          console.info("docx loaded with:", a.label);
+          break;
+        } catch (e) {
+          lastErr = e;
+          console.error(`docx attempt "${a.label}" failed:`, e);
+        }
+      }
+      if (!ok) throw lastErr;
+
+      try { fixRenderedImages(target); } catch (e) { console.warn("fixRenderedImages:", e); }
+
       setKeepDocLayout(true);
-      setFileName(file.name.replace(/\.docx?$/i, ""));
+      setFileName(file.name.replace(/\.docx$/i, ""));
       setDirty(false);
-      toast.success("Word file loaded — headers & footers preserved");
-    } catch (e) {
+      toast.success("Word file loaded");
+    } catch (e: any) {
       console.error(e);
-      toast.error("Could not read this Word file");
+      toast.error(`Could not read this Word file: ${e?.message ?? "unknown error"}`);
     } finally {
       setLoading(false);
     }
