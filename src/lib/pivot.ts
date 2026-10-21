@@ -112,12 +112,10 @@ export function computePivot(rows: Record<string, any>[], rawCfg: any): PivotRes
       if (!r) continue;
       if (useFilter && !fset.has(clean(r[cfg.filterCol!]))) continue;
 
-      // Rows/Columns ke chune hue column me koi bhi cell khaali ho (ya "Total" ho,
-      // jaise AutoSum wali row) to wo row pivot se hata di jati hai
-      const parts = cfg.rowCols.map(c => clean(r[c]));
-      if (parts.some(p => !p) || /^total$/i.test(parts[0])) continue;
-      const colParts = cfg.colCols.map(c => clean(r[c]));
-      if (hasCols && colParts.some(p => !p)) continue;
+      const parts = cfg.rowCols.map(c => clean(r[c])).filter(Boolean);   // khaali hissa label se hat jata hai
+      if (!parts.length || /^total$/i.test(parts[0])) continue;          // poori khaali / Total (AutoSum) row chhod do
+      const colParts = cfg.colCols.map(c => clean(r[c])).filter(Boolean);
+      if (hasCols && !colParts.length) continue;
       const rk = parts.join(" › ");
       const ckBase = hasCols ? colParts.join(" › ") : "";
 
