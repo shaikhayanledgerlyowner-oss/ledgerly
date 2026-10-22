@@ -107,11 +107,147 @@ function fixRenderedImages(root: HTMLElement) {
   });
   root.querySelectorAll<HTMLImageElement>("img").forEach(img => {
     img.removeAttribute("loading");
-    const floating = !!img.closest('[style*="position: absolute"], [style*="position:absolute"]');
-    if (!floating && !img.getAttribute("width") && !img.style.width) {
+    /* docx-preview "wrapNone" (floating) images live inside a 0x0 wrapper.
+       max-width:100% of 0px = 0px  ->  image collapses and disappears.
+       So never give max-width to those. */
+    const p = img.parentElement;
+    const inZeroBox = !!p && p.style.width === "0px";
+    if (!inZeroBox && !img.getAttribute("width") && !img.style.width) {
       img.style.maxWidth = "100%";
     }
   });
+}
+
+/* ─── Floating image positions ───────────────────────────────────────
+   docx-preview draws "wrapNone" anchored images as position:relative with
+   left/top = the Word offset, measured from where the image sits in the text
+   flow. Word measures from the PAGE (or margin / paragraph). So images that
+   are anchored to the page end up shifted by the page margins.
+   We read the real anchor info from document.xml and correct left/top.
+   If anything doesn't match, we leave docx-preview's own placement alone.
+   ─────────────────────────────────────────────────────────────────── */
+const WP_NS  = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
+const PIC_NS = "http://schemas.openxmlformats.org/drawingml/2006/picture";
+const EMU_PER_PX = 9525;
+
+type AnchorInfo = {
+  cx: number; cy: number;                       // size in px
+  relH: string; relV: string;                   // relativeFrom
+  offX: number | null; offY: number | null;     // posOffset in px
+  alignH: string | null; alignV: string | null; // <wp:align>
+};
+
+async function readFloatingAnchors(buf: ArrayBuffer): Promise<AnchorInfo[]> {
+  try {
+    const zip = await JSZip.loadAsync(buf);
+    const f = zip.file("word/document.xml");
+    if (!f) return [];
+    let xml = await f.async("string");
+    if (xml.charCodeAt(0) === 0xFEFF) xml = xml.slice(1);
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    if (doc.getElementsByTagName("parsererror").length) return [];
+
+    const out: AnchorInfo[] = [];
+    for (const a of Array.from(doc.getElementsByTagNameNS(WP_NS, "anchor"))) {
+      const el = (name: string) => a.getElementsByTagNameNS(WP_NS, name)[0] as Element | undefined;
+      if (!el("wrapNone")) continue;                                   // only the kind docx-preview draws as relative
+      if (!a.getElementsByTagNameNS(PIC_NS, "pic").length) continue;   // only real pictures
+      const ext = el("extent");
+      if (!ext) continue;
+
+      const axis = (name: "positionH" | "positionV") => {
+        const n = el(name);
+        const off = n?.getElementsByTagNameNS(WP_NS, "posOffset")[0]?.textContent;
+        const al  = n?.getElementsByTagNameNS(WP_NS, "align")[0]?.textContent;
+        return {
+          rel: n?.getAttribute("relativeFrom") ?? "page",
+          off: off != null && off !== "" ? Number(off) / EMU_PER_PX : null,
+          align: al ?? null,
+        };
+      };
+      const h = axis("positionH");
+      const v = axis("positionV");
+
+      if (a.getAttribute("simplePos") === "1") {           // absolute position on the page
+        const sp = el("simplePos");
+        h.rel = v.rel = "page";
+        h.off = Number(sp?.getAttribute("x") ?? 0) / EMU_PER_PX;
+        v.off = Number(sp?.getAttribute("y") ?? 0) / EMU_PER_PX;
+        h.align = v.align = null;
+      }
+
+      out.push({
+        cx: Number(ext.getAttribute("cx")) / EMU_PER_PX,
+        cy: Number(ext.getAttribute("cy")) / EMU_PER_PX,
+        relH: h.rel, relV: v.rel, offX: h.off, offY: v.off,
+        alignH: h.align, alignV: v.align,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/* target coordinate (px from the page edge) for one axis, or null = keep in-flow position */
+function resolveAxis(
+  rel: string, off: number | null, align: string | null,
+  size: number, padStart: number, padEnd: number, extent: number,
+): number | null {
+  let box: [number, number] | null = null;
+  if (rel === "page") box = [0, size];
+  else if (rel === "margin" || rel === "column") box = [padStart, size - padEnd];
+  else if (rel === "topMargin" || rel === "leftMargin" || rel === "insideMargin" || rel === "outsideMargin") box = [0, padStart];
+  else if (rel === "bottomMargin" || rel === "rightMargin") box = [size - padEnd, size];
+  if (!box) return null;                                   // paragraph / line / character
+  const [s, e] = box;
+  if (align === "center") return s + (e - s - extent) / 2;
+  if (align === "right" || align === "bottom" || align === "outside") return e - extent;
+  if (align) return s;
+  return s + (off ?? 0);
+}
+
+function placeFloatingImages(root: HTMLElement, anchors: AnchorInfo[]) {
+  if (!anchors.length) return;
+
+  const items: { wrap: HTMLElement; img: HTMLImageElement; sec: HTMLElement }[] = [];
+  root.querySelectorAll<HTMLImageElement>("img").forEach(img => {
+    const wrap = img.parentElement;
+    const sec  = img.closest<HTMLElement>("section.docx");
+    if (wrap && sec && wrap.style.position === "relative" &&
+        wrap.style.width === "0px" && wrap.style.height === "0px") {
+      items.push({ wrap, img, sec });
+    }
+  });
+
+  let next = 0;
+  for (const { wrap, img, sec } of items) {
+    const w = img.offsetWidth, h = img.offsetHeight;
+    let j = next;
+    while (j < anchors.length && (Math.abs(anchors[j].cx - w) > 2 || Math.abs(anchors[j].cy - h) > 2)) j++;
+    if (j >= anchors.length) continue;                     // no match -> leave as is
+    const a = anchors[j];
+    next = j + 1;
+
+    const oldLeft = wrap.style.left, oldTop = wrap.style.top;
+    wrap.style.left = "0px";
+    wrap.style.top  = "0px";
+    const sr = sec.getBoundingClientRect();
+    const k  = sr.width / sec.offsetWidth || 1;            // editor zoom
+    const ir = img.getBoundingClientRect();
+    // where the image really sits in the flow (small images are baseline-aligned inside the box)
+    const sx = (ir.left - sr.left) / k;
+    const sy = (ir.top  - sr.top)  / k;
+
+    const cs = getComputedStyle(sec);
+    const tx = resolveAxis(a.relH, a.offX, a.alignH, sec.offsetWidth,  parseFloat(cs.paddingLeft) || 0, parseFloat(cs.paddingRight)  || 0, w);
+    const ty = resolveAxis(a.relV, a.offY, a.alignV, sec.offsetHeight, parseFloat(cs.paddingTop)  || 0, parseFloat(cs.paddingBottom) || 0, h);
+
+    if (tx === null && oldLeft) wrap.style.left = oldLeft;
+    else wrap.style.left = `${(tx ?? sx) - sx}px`;
+    if (ty === null && oldTop) wrap.style.top = oldTop;
+    else wrap.style.top = `${(ty ?? sy) - sy}px`;
+  }
 }
 
 const FONTS = [
@@ -243,6 +379,8 @@ export default function DocumentEditorPage() {
       if (!ok) throw lastErr;
 
       try { fixRenderedImages(target); } catch (e) { console.warn("fixRenderedImages:", e); }
+      try { placeFloatingImages(target, await readFloatingAnchors(rawBuf)); }
+      catch (e) { console.warn("placeFloatingImages:", e); }
 
       setKeepDocLayout(true);
       setFileName(file.name.replace(/\.docx$/i, ""));
@@ -281,21 +419,74 @@ ${docStyles()}
     toast.success("Downloaded — opens in Microsoft Word");
   };
 
-  const printDoc = () => {
-    if (!editorRef.current) return;
+  /* Print / PDF — every Word page (or .page block) prints at its own on-screen
+     size, so a 1-page A4 invoice stays 1 page. Paper size comes from the
+     document (@page size), NOT the printer default (Letter). */
+  const printDoc = async () => {
+    const live = editorRef.current;
+    if (!live) return;
     const w = window.open("", "_blank", "width=900,height=1000");
-    if (!w) return;
-    w.document.write(`<html><head><title>${fileName}</title>
+    if (!w) { toast.error("Popup blocked — allow popups for this site"); return; }
+
+    const clone = live.cloneNode(true) as HTMLElement;
+    clone.removeAttribute("contenteditable");
+    clone.querySelectorAll("style").forEach(s => s.remove());   // re-added in <head>, before our overrides
+
+    const sel = "section.docx, .page";
+    const liveSheets  = Array.from(live.querySelectorAll<HTMLElement>(sel));
+    const cloneSheets = Array.from(clone.querySelectorAll<HTMLElement>(sel));
+
+    const sizes = liveSheets.map(el => {
+      const cs = getComputedStyle(el);
+      const wpx = parseFloat(cs.width) || el.offsetWidth;
+      const hpx = parseFloat(cs.minHeight) || el.offsetHeight;
+      return { wpx, hpx, padding: cs.padding };
+    });
+    const uniq = Array.from(new Set(sizes.map(s => `${s.wpx.toFixed(2)}px ${s.hpx.toFixed(2)}px`)));
+
+    let pageRules: string;
+    if (uniq.length <= 1) {
+      pageRules = `@page{size:${uniq[0] ?? "210mm 297mm"};margin:0}`;
+    } else {                                                    // mixed page sizes -> named pages
+      pageRules = uniq.map((u, i) => `@page ps${i}{size:${u};margin:0}.ps${i}{page:ps${i}}`).join("\n");
+    }
+    cloneSheets.forEach((el, i) => {
+      const s = sizes[i];
+      if (!s) return;
+      if (uniq.length > 1) el.classList.add(`ps${uniq.indexOf(`${s.wpx.toFixed(2)}px ${s.hpx.toFixed(2)}px`)}`);
+      el.style.setProperty("width", `${s.wpx}px`, "important");
+      // 1px less than the sheet so rounding never pushes an extra blank page
+      el.style.setProperty("min-height", `${Math.max(0, s.hpx - 1)}px`, "important");
+      el.style.setProperty("padding", s.padding, "important");
+    });
+
+    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${fileName}</title>
 <style>
-@page{margin:0}body{margin:0;background:#fff}
-${pageCss()}
 ${docStyles()}
-section.docx,.page{box-shadow:none!important;margin:0 auto!important}
+</style>
+<style>
+${pageRules}
+html,body{margin:0!important;padding:0!important;background:#fff!important}
+*{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.docx-wrapper{display:block!important;background:none!important;padding:0!important;margin:0!important}
+section.docx,.page{
+  box-shadow:none!important;margin:0!important;position:relative!important;
+  overflow:visible!important;box-sizing:border-box!important;
+  break-after:page;page-break-after:always;
+  -webkit-box-decoration-break:clone;box-decoration-break:clone}
+section.docx:last-of-type,.page:last-of-type{break-after:auto;page-break-after:auto}
+.docx-wrapper img{max-width:none}
 table{border-collapse:collapse}
-</style></head><body>${editorRef.current.innerHTML}</body></html>`);
+</style></head><body>${clone.innerHTML}</body></html>`);
     w.document.close();
+
+    // wait until every image is decoded, then print
+    await Promise.all(Array.from(w.document.images).map(im =>
+      im.complete ? Promise.resolve() :
+        new Promise<void>(res => { im.onload = im.onerror = () => res(); })));
+    await new Promise(r => setTimeout(r, 200));
     w.focus();
-    setTimeout(() => w.print(), 500);
+    w.print();
   };
 
   /* ── Table ops ── */
@@ -681,10 +872,11 @@ table{border-collapse:collapse}
         }
         .doc-surface table  { border-collapse: collapse; }
         .doc-surface td, .doc-surface th { vertical-align: top; }
-        .doc-surface img    { max-width: 100%; height: auto; display: inline-block; }
-        .doc-surface svg,
-        .doc-surface v\\:shape,
-        .doc-surface v\\:imagedata { max-width: 100%; }
+        /* Word images keep their own size (floating images sit in a 0x0 box,
+           so max-width:100% would shrink them to nothing). Only images you
+           insert yourself get max-width:100% (inline style). */
+        .doc-surface .docx-wrapper img,
+        .doc-surface .docx-wrapper svg { max-width: none; }
         .doc-surface:focus  { outline: none; }
         .doc-surface td:hover { outline: 1px dashed rgba(43,87,154,.35); }
         /* Header / footer rendered by docx-preview */
