@@ -276,21 +276,10 @@ export default function DashboardPage() {
 
             {hasMoney ? (
               <>
-                <div className="mt-4 flex flex-wrap items-end gap-x-6 gap-y-1">
-                  <div>
-                    <p className="text-xs text-blue-200/70">{incLabel}</p>
-                    <p className="text-2xl font-semibold tabular-nums">{formatCurrency(inc, cur)}</p>
-                  </div>
-                  {exp > 0 && (
-                    <>
-                      <div><p className="text-xs text-blue-200/70">Expenses</p><p className="text-lg font-semibold tabular-nums text-orange-300">{formatCurrency(exp, cur)}</p></div>
-                      <div><p className="text-xs text-blue-200/70">Net</p><p className={cn("text-lg font-semibold tabular-nums", inc - exp >= 0 ? "text-emerald-300" : "text-red-300")}>{formatCurrency(inc - exp, cur)}</p></div>
-                    </>
-                  )}
-                </div>
+                {/* amounts hata diye — sirf chart dikhta hai */}
                 <div className="mt-4 flex gap-1.5" role="img" aria-label="Income and expense by period">
                   {series.map(s => (
-                    <div key={s.key} className="flex flex-1 flex-col items-center gap-1.5" title={`${s.label}: ${formatCurrency(s.income, cur)}${s.expense ? ` · expense ${formatCurrency(s.expense, cur)}` : ""}`}>
+                    <div key={s.key} className="flex flex-1 flex-col items-center gap-1.5" title={s.label}>
                       <div className="flex h-24 w-full items-end justify-center gap-0.5">
                         <div className="w-full max-w-[18px] rounded-t bg-blue-400" style={{ height: s.income ? Math.max(3, (s.income / maxV) * 96) : 2, opacity: s.income ? 1 : 0.25 }} />
                         {exp > 0 && <div className="w-full max-w-[18px] rounded-t bg-orange-400" style={{ height: s.expense ? Math.max(3, (s.expense / maxV) * 96) : 2, opacity: s.expense ? 1 : 0.25 }} />}
