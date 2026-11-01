@@ -123,11 +123,14 @@ function fixRenderedImages(root: HTMLElement) {
    left/top = the Word offset, measured from where the image sits in the text
    flow. Word measures from the PAGE (or margin / paragraph). So images that
    are anchored to the page end up shifted by the page margins.
-   We read the real anchor info from document.xml and correct left/top.
-   If anything doesn't match, we leave docx-preview's own placement alone.
+   We read the real anchor info from the document (body + headers + footers +
+   footnotes) and correct left/top. "Behind text" images are sent behind the
+   text. If anything doesn't match, docx-preview's own placement stays.
    ─────────────────────────────────────────────────────────────────── */
 const WP_NS  = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
 const PIC_NS = "http://schemas.openxmlformats.org/drawingml/2006/picture";
+const A_NS   = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const EMU_PER_PX = 9525;
 
 type AnchorInfo = {
@@ -135,53 +138,98 @@ type AnchorInfo = {
   relH: string; relV: string;                   // relativeFrom
   offX: number | null; offY: number | null;     // posOffset in px
   alignH: string | null; alignV: string | null; // <wp:align>
+  behind: boolean;                              // "Behind text"
+  b64: number;                                  // length of the image's base64 (0 = unknown)
 };
+
+function resolveZipPath(target: string): string {
+  if (target.startsWith("/")) return target.slice(1);
+  const out: string[] = [];
+  for (const s of ["word", ...target.split("/")]) {
+    if (s === "..") out.pop();
+    else if (s && s !== ".") out.push(s);
+  }
+  return out.join("/");
+}
 
 async function readFloatingAnchors(buf: ArrayBuffer): Promise<AnchorInfo[]> {
   try {
     const zip = await JSZip.loadAsync(buf);
-    const f = zip.file("word/document.xml");
-    if (!f) return [];
-    let xml = await f.async("string");
-    if (xml.charCodeAt(0) === 0xFEFF) xml = xml.slice(1);
-    const doc = new DOMParser().parseFromString(xml, "application/xml");
-    if (doc.getElementsByTagName("parsererror").length) return [];
+    const parts = Object.keys(zip.files)
+      .filter(p => /^word\/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$/i.test(p))
+      .sort((a, b) => (a === "word/document.xml" ? -1 : b === "word/document.xml" ? 1 : a.localeCompare(b)));
+
+    const b64Cache = new Map<string, number>();
+    const b64Len = async (path: string) => {
+      if (!b64Cache.has(path)) {
+        const f = zip.file(path);
+        b64Cache.set(path, f ? 4 * Math.ceil((await f.async("uint8array")).length / 3) : 0);
+      }
+      return b64Cache.get(path)!;
+    };
+    const parse = async (path: string) => {
+      const f = zip.file(path);
+      if (!f) return null;
+      let xml = await f.async("string");
+      if (xml.charCodeAt(0) === 0xFEFF) xml = xml.slice(1);
+      const d = new DOMParser().parseFromString(xml, "application/xml");
+      return d.getElementsByTagName("parsererror").length ? null : d;
+    };
 
     const out: AnchorInfo[] = [];
-    for (const a of Array.from(doc.getElementsByTagNameNS(WP_NS, "anchor"))) {
-      const el = (name: string) => a.getElementsByTagNameNS(WP_NS, name)[0] as Element | undefined;
-      if (!el("wrapNone")) continue;                                   // only the kind docx-preview draws as relative
-      if (!a.getElementsByTagNameNS(PIC_NS, "pic").length) continue;   // only real pictures
-      const ext = el("extent");
-      if (!ext) continue;
+    for (const part of parts) {
+      const doc = await parse(part);
+      if (!doc) continue;
 
-      const axis = (name: "positionH" | "positionV") => {
-        const n = el(name);
-        const off = n?.getElementsByTagNameNS(WP_NS, "posOffset")[0]?.textContent;
-        const al  = n?.getElementsByTagNameNS(WP_NS, "align")[0]?.textContent;
-        return {
-          rel: n?.getAttribute("relativeFrom") ?? "page",
-          off: off != null && off !== "" ? Number(off) / EMU_PER_PX : null,
-          align: al ?? null,
-        };
-      };
-      const h = axis("positionH");
-      const v = axis("positionV");
-
-      if (a.getAttribute("simplePos") === "1") {           // absolute position on the page
-        const sp = el("simplePos");
-        h.rel = v.rel = "page";
-        h.off = Number(sp?.getAttribute("x") ?? 0) / EMU_PER_PX;
-        v.off = Number(sp?.getAttribute("y") ?? 0) / EMU_PER_PX;
-        h.align = v.align = null;
-      }
-
-      out.push({
-        cx: Number(ext.getAttribute("cx")) / EMU_PER_PX,
-        cy: Number(ext.getAttribute("cy")) / EMU_PER_PX,
-        relH: h.rel, relV: v.rel, offX: h.off, offY: v.off,
-        alignH: h.align, alignV: v.align,
+      // rId -> media path for this part
+      const rels = new Map<string, string>();
+      const relDoc = await parse(part.replace(/^word\//, "word/_rels/") + ".rels");
+      relDoc?.querySelectorAll("Relationship").forEach(r => {
+        const id = r.getAttribute("Id"), t = r.getAttribute("Target");
+        if (id && t && r.getAttribute("TargetMode") !== "External") rels.set(id, resolveZipPath(t));
       });
+
+      for (const a of Array.from(doc.getElementsByTagNameNS(WP_NS, "anchor"))) {
+        const el = (name: string) => a.getElementsByTagNameNS(WP_NS, name)[0] as Element | undefined;
+        if (!el("wrapNone")) continue;                                   // only the kind docx-preview draws as relative
+        const pic = a.getElementsByTagNameNS(PIC_NS, "pic")[0];
+        if (!pic) continue;                                              // only real pictures
+        const ext = el("extent");
+        if (!ext) continue;
+
+        const axis = (name: "positionH" | "positionV") => {
+          const n = el(name);
+          const off = n?.getElementsByTagNameNS(WP_NS, "posOffset")[0]?.textContent;
+          const al  = n?.getElementsByTagNameNS(WP_NS, "align")[0]?.textContent;
+          return {
+            rel: n?.getAttribute("relativeFrom") ?? "page",
+            off: off != null && off !== "" ? Number(off) / EMU_PER_PX : null,
+            align: al ?? null,
+          };
+        };
+        const h = axis("positionH");
+        const v = axis("positionV");
+
+        if (a.getAttribute("simplePos") === "1") {           // absolute position on the page
+          const sp = el("simplePos");
+          h.rel = v.rel = "page";
+          h.off = Number(sp?.getAttribute("x") ?? 0) / EMU_PER_PX;
+          v.off = Number(sp?.getAttribute("y") ?? 0) / EMU_PER_PX;
+          h.align = v.align = null;
+        }
+
+        const embed = pic.getElementsByTagNameNS(A_NS, "blip")[0]?.getAttributeNS(REL_NS, "embed");
+        const target = embed ? rels.get(embed) : undefined;
+
+        out.push({
+          cx: Number(ext.getAttribute("cx")) / EMU_PER_PX,
+          cy: Number(ext.getAttribute("cy")) / EMU_PER_PX,
+          relH: h.rel, relV: v.rel, offX: h.off, offY: v.off,
+          alignH: h.align, alignV: v.align,
+          behind: a.getAttribute("behindDoc") === "1" || a.getAttribute("behindDoc") === "true",
+          b64: target ? await b64Len(target) : 0,
+        });
+      }
     }
     return out;
   } catch {
@@ -220,14 +268,28 @@ function placeFloatingImages(root: HTMLElement, anchors: AnchorInfo[]) {
     }
   });
 
-  let next = 0;
+  const used = new Set<number>();
+  const findAnchor = (w: number, h: number, len: number) => {
+    // pass 0: same size AND same image bytes. pass 1: same size only.
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < anchors.length; i++) {
+        if (used.has(i)) continue;
+        if (Math.abs(anchors[i].cx - w) > 2 || Math.abs(anchors[i].cy - h) > 2) continue;
+        if (pass === 0 && !(len && anchors[i].b64 === len)) continue;
+        return i;
+      }
+    }
+    return -1;
+  };
+
   for (const { wrap, img, sec } of items) {
     const w = img.offsetWidth, h = img.offsetHeight;
-    let j = next;
-    while (j < anchors.length && (Math.abs(anchors[j].cx - w) > 2 || Math.abs(anchors[j].cy - h) > 2)) j++;
-    if (j >= anchors.length) continue;                     // no match -> leave as is
+    const comma = img.src.startsWith("data:") ? img.src.indexOf(",") : -1;
+    const len = comma >= 0 ? img.src.length - comma - 1 : 0;
+    const j = findAnchor(w, h, len);
+    if (j < 0) continue;                                   // no match -> leave as is
+    used.add(j);
     const a = anchors[j];
-    next = j + 1;
 
     const oldLeft = wrap.style.left, oldTop = wrap.style.top;
     wrap.style.left = "0px";
@@ -247,7 +309,59 @@ function placeFloatingImages(root: HTMLElement, anchors: AnchorInfo[]) {
     else wrap.style.left = `${(tx ?? sx) - sx}px`;
     if (ty === null && oldTop) wrap.style.top = oldTop;
     else wrap.style.top = `${(ty ?? sy) - sy}px`;
+
+    if (a.behind) {                                        // "Behind text": letterheads, watermarks
+      wrap.style.zIndex = "-1";
+      sec.style.isolation = "isolate";                     // keeps it above the white page, below the text
+    }
   }
+}
+
+/* wait until every <img> has loaded (or failed), max a few seconds */
+async function imagesReady(root: HTMLElement, timeout = 4000) {
+  const imgs = Array.from(root.querySelectorAll<HTMLImageElement>("img"));
+  await Promise.all(imgs.map(im => im.complete ? Promise.resolve() : new Promise<void>(res => {
+    const done = () => { clearTimeout(t); res(); };
+    const t = setTimeout(res, timeout);
+    im.addEventListener("load", done, { once: true });
+    im.addEventListener("error", done, { once: true });
+  })));
+}
+
+/* Inline images that are wider than their cell / the page are scaled down
+   (aspect ratio kept) so they never break the table or run off the page. */
+function fitInlineImages(root: HTMLElement) {
+  root.querySelectorAll<HTMLImageElement>("section.docx img").forEach(img => {
+    if (img.parentElement?.style.width === "0px") return;        // floating
+    const sec = img.closest<HTMLElement>("section.docx");
+    if (!sec) return;
+    const cell = img.closest<HTMLElement>("td,th");
+    let limit = sec.clientWidth;                                  // never wider than the page
+    if (cell) {
+      const cs = getComputedStyle(cell);
+      limit = cell.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    }
+    const w = img.offsetWidth, h = img.offsetHeight;
+    if (limit > 20 && w > limit + 2 && h > 0) {
+      img.style.width  = `${limit}px`;
+      img.style.height = `${Math.round(limit * h / w)}px`;
+    }
+  });
+}
+
+/* Formats a browser cannot draw (EMF, WMF, TIFF, missing/linked files):
+   no ugly broken-image icon — keep the empty box and report the count. */
+function markBrokenImages(root: HTMLElement): number {
+  let n = 0;
+  root.querySelectorAll<HTMLImageElement>("img").forEach(im => {
+    if (im.complete && im.naturalWidth === 0 && !im.src.startsWith("data:image/svg")) {
+      n++;
+      im.setAttribute("data-broken", "1");
+      im.removeAttribute("src");
+      im.alt = "";
+    }
+  });
+  return n;
 }
 
 const FONTS = [
@@ -294,6 +408,11 @@ export default function DocumentEditorPage() {
   const [margins,       setMargins]       = useState<[number,number,number,number]>([1,1,1,1]);
   const [keepDocLayout, setKeepDocLayout] = useState(true);
   const [handle,        setHandle]        = useState<{top:number;left:number;width:number;height:number}|null>(null);
+
+  /* picture selection (resize box) + last caret position inside the page */
+  const selImgRef  = useRef<HTMLImageElement | null>(null);
+  const savedRange = useRef<Range | null>(null);
+  const [imgBox, setImgBox] = useState<{top:number;left:number;width:number;height:number}|null>(null);
 
   const paperW = (landscape ? PAPERS[paper].h : PAPERS[paper].w) * DPI;
   const paperH = (landscape ? PAPERS[paper].w : PAPERS[paper].h) * DPI;
@@ -378,14 +497,21 @@ export default function DocumentEditorPage() {
       }
       if (!ok) throw lastErr;
 
-      try { fixRenderedImages(target); } catch (e) { console.warn("fixRenderedImages:", e); }
-      try { placeFloatingImages(target, await readFloatingAnchors(rawBuf)); }
-      catch (e) { console.warn("placeFloatingImages:", e); }
+      let badImages = 0;
+      try {
+        fixRenderedImages(target);
+        await imagesReady(target);                         // sizes are final only after images load
+        fitInlineImages(target);                           // too-wide images -> fit page / cell
+        placeFloatingImages(target, await readFloatingAnchors(rawBuf));
+        badImages = markBrokenImages(target);              // EMF / WMF etc.
+      } catch (e) { console.warn("image fixes:", e); }
+      selImgRef.current = null; setImgBox(null);
 
       setKeepDocLayout(true);
       setFileName(file.name.replace(/\.docx$/i, ""));
       setDirty(false);
       toast.success("Word file loaded");
+      if (badImages) toast.warning(`${badImages} image${badImages > 1 ? "s" : ""} in this file use a format the browser cannot show (EMF/WMF/TIFF). Save the picture as PNG/JPG in Word and import again.`, { duration: 8000 });
     } catch (e: any) {
       console.error(e);
       toast.error(`Could not read this Word file: ${e?.message ?? "unknown error"}`);
@@ -476,6 +602,7 @@ section.docx,.page{
   -webkit-box-decoration-break:clone;box-decoration-break:clone}
 section.docx:last-of-type,.page:last-of-type{break-after:auto;page-break-after:auto}
 .docx-wrapper img{max-width:none}
+img[data-broken]{outline:none!important;background:none!important}
 table{border-collapse:collapse}
 </style></head><body>${clone.innerHTML}</body></html>`);
     w.document.close();
@@ -567,9 +694,145 @@ table{border-collapse:collapse}
   };
   const applyPageSetup = () => { setKeepDocLayout(false); setDirty(true); toast.success("Page layout applied"); };
 
+  /* ── Pictures ───────────────────────────────────────────────────────── */
+  const syncImgBox = useCallback(() => {
+    const img = selImgRef.current, canvas = canvasRef.current;
+    if (!img || !canvas || !img.isConnected) { selImgRef.current = null; setImgBox(null); return; }
+    const r = img.getBoundingClientRect(), b = canvas.getBoundingClientRect();
+    setImgBox({ top: r.top - b.top + canvas.scrollTop, left: r.left - b.left + canvas.scrollLeft, width: r.width, height: r.height });
+  }, []);
+
+  /* usable width (px) where an element sits: table cell, else page text area */
+  const availWidth = (el: Element | null): number => {
+    const cell = el?.closest<HTMLElement>("td,th");
+    const box  = cell ?? el?.closest<HTMLElement>("section.docx, .page");
+    if (!box) return paperW - 2 * DPI;
+    const cs = getComputedStyle(box);
+    return box.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+  };
+
+  /* Insert at the caret, at the picture's ORIGINAL size (same aspect ratio).
+     Only if it is wider than the page/cell is it scaled down to fit — never distorted. */
   const insertImage = async (file: File) => {
-    const dataUrl = await new Promise<string>(res => { const fr=new FileReader(); fr.onload=()=>res(String(fr.result)); fr.readAsDataURL(file); });
-    exec("insertHTML", `<img src="${dataUrl}" style="max-width:100%" />`);
+    const ed = editorRef.current;
+    if (!ed) return;
+    if (!/^image\//.test(file.type) && !/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name)) {
+      toast.error("Please choose an image file (PNG, JPG, GIF, WEBP, SVG)");
+      return;
+    }
+    try {
+      const dataUrl = await new Promise<string>((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res(String(fr.result));
+        fr.onerror = () => rej(fr.error);
+        fr.readAsDataURL(file);
+      });
+      const nat = await new Promise<{ w: number; h: number }>((res, rej) => {
+        const im = new window.Image();
+        im.onload  = () => res({ w: im.naturalWidth || im.width, h: im.naturalHeight || im.height });
+        im.onerror = () => rej(new Error("This picture could not be read"));
+        im.src = dataUrl;
+      });
+
+      // 1) put the caret back where the user was (or at the end of the last page)
+      ed.focus();
+      const sel = window.getSelection();
+      let range = savedRange.current;
+      if (!range || !ed.contains(range.startContainer)) {
+        range = document.createRange();
+        const hosts = ed.querySelectorAll<HTMLElement>("section.docx article, .page");
+        const host = hosts[hosts.length - 1] ?? ed;
+        const p = document.createElement("p");
+        host.appendChild(p);
+        range.selectNodeContents(p);
+        range.collapse(true);
+      }
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+
+      // 2) insert (execCommand keeps Ctrl+Z working)
+      const before = new Set(Array.from(ed.querySelectorAll("img")));
+      document.execCommand("insertImage", false, dataUrl);
+      let img = Array.from(ed.querySelectorAll<HTMLImageElement>("img")).find(i => !before.has(i)) ?? null;
+      if (!img) {
+        img = document.createElement("img");
+        img.src = dataUrl;
+        range.insertNode(img);
+      }
+
+      // 3) original size, capped to what fits; both sides set so the ratio is locked
+      const avail = availWidth(img.parentElement);
+      const natW = nat.w || 300;
+      const w = Math.max(1, Math.round(avail > 40 ? Math.min(natW, avail) : natW));
+      const h = nat.w && nat.h ? Math.round(w * nat.h / nat.w) : 0;
+      img.removeAttribute("width");
+      img.removeAttribute("height");
+      img.style.cssText = `width:${w}px;${h ? `height:${h}px;` : "height:auto;"}max-width:none;`;
+
+      // 4) caret after the picture, picture selected (resize handle)
+      const after = document.createRange();
+      after.setStartAfter(img);
+      after.collapse(true);
+      sel?.removeAllRanges();
+      sel?.addRange(after);
+      savedRange.current = after.cloneRange();
+      selImgRef.current = img;
+      syncImgBox();
+      setDirty(true);
+    } catch (e: any) {
+      console.error(e);
+      toast.error(e?.message ?? "Could not add the picture");
+    }
+  };
+
+  const imgOriginalSize = () => {
+    const img = selImgRef.current;
+    if (!img || !img.naturalWidth) return;
+    img.style.maxWidth = "none";
+    img.style.width  = `${img.naturalWidth}px`;
+    img.style.height = `${img.naturalHeight}px`;
+    setDirty(true); syncImgBox();
+  };
+  const imgFitWidth = () => {
+    const img = selImgRef.current;
+    if (!img) return;
+    const r = img.getBoundingClientRect();
+    if (!r.width) return;
+    const w = Math.round(availWidth(img.parentElement));
+    img.style.maxWidth = "none";
+    img.style.width  = `${w}px`;
+    img.style.height = `${Math.round(w * r.height / r.width)}px`;
+    setDirty(true); syncImgBox();
+  };
+  const imgDelete = () => {
+    const img = selImgRef.current;
+    if (!img) return;
+    const wrap = img.parentElement;
+    if (wrap && wrap.style.width === "0px") wrap.remove(); else img.remove();   // Word floating pictures live in a 0x0 box
+    selImgRef.current = null; setImgBox(null); setDirty(true);
+  };
+  /* drag the corner = resize, aspect ratio always kept */
+  const startImgResize = (e: React.MouseEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    const img = selImgRef.current;
+    if (!img) return;
+    const k  = zoom / 100;
+    const r0 = img.getBoundingClientRect();
+    const w0 = r0.width / k, ratio = r0.height / r0.width, x0 = e.clientX;
+    const move = (ev: MouseEvent) => {
+      const w = Math.max(16, Math.round(w0 + (ev.clientX - x0) / k));
+      img.style.maxWidth = "none";
+      img.style.width  = `${w}px`;
+      img.style.height = `${Math.round(w * ratio)}px`;
+      syncImgBox();
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setDirty(true);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
   };
 
   const newDocument = () => {
@@ -587,6 +850,22 @@ table{border-collapse:collapse}
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
+
+  /* remember the last caret position inside the page (the file dialog steals focus) */
+  useEffect(() => {
+    const onSel = () => {
+      const sel = window.getSelection(), ed = editorRef.current;
+      if (sel && sel.rangeCount && ed && ed.contains(sel.anchorNode)) savedRange.current = sel.getRangeAt(0).cloneRange();
+    };
+    document.addEventListener("selectionchange", onSel);
+    try { document.execCommand("enableObjectResizing", false, "false"); } catch { /* ignore */ }
+    return () => document.removeEventListener("selectionchange", onSel);
+  }, []);
+  useEffect(() => { syncImgBox(); }, [zoom, syncImgBox]);
+  useEffect(() => {
+    window.addEventListener("resize", syncImgBox);
+    return () => window.removeEventListener("resize", syncImgBox);
+  }, [syncImgBox]);
 
   useEffect(() => {
     if (editorRef.current && !editorRef.current.innerHTML.trim())
@@ -704,6 +983,8 @@ table{border-collapse:collapse}
           <Btn title="Numbering"    onClick={()=>exec("insertOrderedList")}><ListOrdered  className="h-4 w-4"/></Btn>
           <Btn title="Decrease indent" onClick={()=>exec("outdent")}><Outdent className="h-4 w-4"/></Btn>
           <Btn title="Increase indent" onClick={()=>exec("indent")} ><Indent  className="h-4 w-4"/></Btn>
+          <Sep/>
+          <Btn title="Insert picture" onClick={()=>imageRef.current?.click()}><ImageIcon className="h-4 w-4"/></Btn>
         </>}
 
         {tab==="insert" && <>
@@ -801,16 +1082,34 @@ table{border-collapse:collapse}
       </div>
 
       {/* Canvas */}
-      <div ref={canvasRef} className="relative flex-1 overflow-auto py-8" onScroll={updateHandles}>
+      <div ref={canvasRef} className="relative flex-1 overflow-auto py-8" onScroll={()=>{updateHandles();syncImgBox();}}>
         <div style={{transform:`scale(${zoom/100})`,transformOrigin:"top center"}}>
           <div
             ref={editorRef}
             contentEditable
             suppressContentEditableWarning
             spellCheck={false}
-            onInput={()=>{setDirty(true);updateHandles();}}
-            onMouseUp={updateHandles}
-            onKeyUp={updateHandles}
+            onInput={()=>{setDirty(true);updateHandles();syncImgBox();}}
+            onMouseUp={e=>{
+              updateHandles();
+              const t = e.target as HTMLElement;
+              if (t.tagName === "IMG") { selImgRef.current = t as HTMLImageElement; syncImgBox(); }
+              else { selImgRef.current = null; setImgBox(null); }
+            }}
+            onKeyUp={()=>{updateHandles();syncImgBox();}}
+            onPaste={e=>{
+              const f = Array.from(e.clipboardData?.files ?? []).find(x=>x.type.startsWith("image/"));
+              if (f) { e.preventDefault(); insertImage(f); }
+            }}
+            onDragOver={e=>{ if (Array.from(e.dataTransfer?.types ?? []).includes("Files")) e.preventDefault(); }}
+            onDrop={e=>{
+              const f = Array.from(e.dataTransfer?.files ?? []).find(x=>x.type.startsWith("image/"));
+              if (!f) return;
+              e.preventDefault();
+              const r = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
+              if (r && editorRef.current?.contains(r.startContainer)) savedRange.current = r;
+              insertImage(f);
+            }}
             onBlur={()=>setTimeout(()=>setHandle(null),200)}
             className={`doc-surface mx-auto outline-none ${keepDocLayout?"":"custom-layout"}`}
             style={{width:paperW}}
@@ -836,6 +1135,21 @@ table{border-collapse:collapse}
               <Plus className="h-3 w-3"/>
             </button>
           </>
+        )}
+
+        {/* selected picture: resize box + quick actions */}
+        {imgBox&&(
+          <div className="pointer-events-none absolute z-20" style={{top:imgBox.top,left:imgBox.left,width:imgBox.width,height:imgBox.height}}>
+            <div className="absolute inset-0 border-2 border-[#2b579a]"/>
+            <div className="pointer-events-auto absolute left-0 top-full mt-2 flex items-center gap-1 rounded border bg-white px-1 py-0.5 text-xs shadow">
+              <button type="button" onMouseDown={e=>e.preventDefault()} onClick={imgOriginalSize} className="rounded px-2 py-1 hover:bg-gray-100">Original size</button>
+              <button type="button" onMouseDown={e=>e.preventDefault()} onClick={imgFitWidth} className="rounded px-2 py-1 hover:bg-gray-100">Fit width</button>
+              <button type="button" title="Delete picture" onMouseDown={e=>e.preventDefault()} onClick={imgDelete} className="rounded px-2 py-1 text-red-600 hover:bg-red-50"><Trash2 className="h-3.5 w-3.5"/></button>
+              <span className="px-1 tabular-nums text-gray-500">{Math.round(imgBox.width/(zoom/100))} × {Math.round(imgBox.height/(zoom/100))}</span>
+            </div>
+            <div onMouseDown={startImgResize} title="Drag to resize (ratio locked)"
+              className="pointer-events-auto absolute -bottom-1.5 -right-1.5 h-3 w-3 cursor-nwse-resize rounded-sm border border-white bg-[#2b579a]"/>
+          </div>
         )}
 
         {loading&&<p className="text-center text-sm text-gray-500 mt-4">Opening document…</p>}
@@ -877,6 +1191,7 @@ table{border-collapse:collapse}
            insert yourself get max-width:100% (inline style). */
         .doc-surface .docx-wrapper img,
         .doc-surface .docx-wrapper svg { max-width: none; }
+        .doc-surface img[data-broken] { outline: 1px dashed #cbd5e1; background: #f8fafc; }
         .doc-surface:focus  { outline: none; }
         .doc-surface td:hover { outline: 1px dashed rgba(43,87,154,.35); }
         /* Header / footer rendered by docx-preview */
