@@ -475,15 +475,9 @@ export default function TablesPage(){
     setStyleMap(p=>{
       const n={...p};
       selCells.forEach(k=>{
+        // jo cells select hain sirf unhi par format lagta hai
+        // (header-only select = sirf header; poori column chahiye to header par double-click karo)
         n[k]={...(n[k]??{}),...patch};
-        // header select hai to formatting poori column (saari row-values) par bhi jaati hai
-        if(k.startsWith("HDR__")){
-          const colName=k.slice(5);
-          allRowsRef.current.forEach(r=>{
-            const rk=ck(r.id,colName);
-            n[rk]={...(n[rk]??{}),...patch};
-          });
-        }
       });
       saveStyles(n);return n;
     });
@@ -868,16 +862,17 @@ export default function TablesPage(){
     setSelCells(s);
   };
 
-  // ✅ header click = poori column (header + saari cells) select.
-  // Drag / Shift+click = kai columns. Ctrl+click = ek-ek karke add/remove.
-  const selectColRange=(a:number,b:number)=>{
+  // ✅ header click / drag / Shift+click = SIRF header cell(s) select (rows nahi).
+  // Double-click = poori column (header + saari rows). full=true se rows bhi judti hain.
+  // Ctrl+click = ek-ek header add/remove.
+  const selectColRange=(a:number,b:number,full=false)=>{
     setEditCell(null);
     const lo=Math.min(a,b),hi=Math.max(a,b);
     const s=new Set<string>();
     for(let j=lo;j<=hi;j++){
       const cn=colsRef.current[j]?.name;if(!cn)continue;
       s.add(hk(cn));
-      rowsRef.current.forEach(r=>s.add(ck(r.id,cn)));
+      if(full)rowsRef.current.forEach(r=>s.add(ck(r.id,cn)));
     }
     setSelCells(s);
   };
@@ -887,7 +882,7 @@ export default function TablesPage(){
     setSelCells(prev=>{
       const s=new Set(prev);
       if(s.has(hk(cn))){s.delete(hk(cn));rowsRef.current.forEach(r=>s.delete(ck(r.id,cn)));}
-      else{s.add(hk(cn));rowsRef.current.forEach(r=>s.add(ck(r.id,cn)));}
+      else s.add(hk(cn));
       return s;
     });
   };
@@ -1464,12 +1459,13 @@ export default function TablesPage(){
                     const hs=styleMap[hStyleKey];
                     return(
                       <th key={col.id}
-                        // header Excel jaisa: click = poori column select, drag/Shift = kai columns,
-                        // Ctrl+click = ek-ek add/remove, Double-click = naam badlo
+                        // click / drag / Shift = sirf header(s) select, Ctrl+click = ek-ek add/remove,
+                        // Double-click = poori column (header + rows). Rename = right-click → Rename Column
                         className={`border border-[#d0d0d0] h-8 text-xs font-medium select-none relative group transition-colors cursor-pointer ${isHSel?"z-10":"hover:bg-[#e8e8e8]"}`}
                         style={{background:hs?.bg??"#f2f2f2",color:hs?.color,fontWeight:hs?.bold?"bold":600,boxShadow:isHSel?"inset 0 0 0 2px #1a73e8":undefined}}
                         onMouseDown={e=>{
                           if(e.button!==0||renamingColId===col.id)return;
+                          if(e.detail>=2)return;   // double-click ka 2nd press: selection mat badlo, onDoubleClick sambhalega
                           if(e.shiftKey){selectColRange(lastHdr.current,ci);}
                           else if(e.ctrlKey||e.metaKey){toggleCol(ci);lastHdr.current=ci;}
                           else{selectColRange(ci,ci);lastHdr.current=ci;hdrAnchor.current=ci;}
@@ -1478,10 +1474,12 @@ export default function TablesPage(){
                           if(hdrAnchor.current!==null&&e.buttons===1)selectColRange(hdrAnchor.current,ci);
                         }}
                         onDoubleClick={()=>{
-                          setRenamingColId(col.id);setRenamingColVal(col.name);
+                          hdrAnchor.current=null;
+                          selectColRange(ci,ci,true);   // header + saari rows
+                          lastHdr.current=ci;
                         }}
                         onContextMenu={e=>openCtx(e,undefined,col.id,col.name)}
-                        title="Click = poori column select • Drag / Shift+click = kai columns • Ctrl+click = add/remove • Double-click = rename"
+                        title="Click / Drag / Shift+click = sirf header • Ctrl+click = add/remove • Double-click = poori column (rows ke saath) • Right-click = Rename"
                       >
                         {renamingColId===col.id?(
                           <div className="flex items-center gap-1 px-1 h-full" onClick={e=>e.stopPropagation()} onMouseDown={e=>e.stopPropagation()}>
